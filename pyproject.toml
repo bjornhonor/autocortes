@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "autocortes"
+dynamic = ["version"]
+description = "Assiste lives, detecta os melhores momentos e publica shorts legendados no YouTube, Instagram e TikTok."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Cada fase do roadmap instala o seu extra: pip install -e ".[render]"
+render = ["faster-whisper>=1.1", "opencv-python>=4.10"]
+detect = ["numpy>=1.26", "anthropic>=0.40"]
+ingest = ["streamlink>=6.8", "yt-dlp", "chat-downloader>=0.2.8"]
+publish = ["google-api-python-client>=2.130", "google-auth-oauthlib>=1.2", "httpx>=0.27"]
+all = ["autocortes[render,detect,ingest,publish]"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+autocortes = "autocortes.cli:run"
+
+[tool.hatch.version]
+path = "src/autocortes/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autocortes"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["pathlib.Path", "typer.Option", "typer.Argument"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

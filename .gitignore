@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# Segredos (credenciais OAuth, tokens)
+.env
+secrets/
+
+# Gerado pelo pipeline: gravações, cortes, banco, modelos baixados
+data/
+models/
