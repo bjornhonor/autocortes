@@ -21,6 +21,22 @@ def test_config_yaml_matches_schema():
     config = load_config(ROOT / "config.yaml")
     assert (config.render.width, config.render.height) == (1080, 1920)
     assert config.llm.model == "claude-opus-5-5"
+    assert config.render.layout == "gta" and "GTA" in config.llm.focus
+
+
+def test_ensaio_inherits_config_and_overrides_detection():
+    ensaio = load_config(ROOT / "ensaio.yaml")
+    base = load_config(ROOT / "config.yaml")
+    assert ensaio.detect.trigger_zscore == 2.5 != base.detect.trigger_zscore
+    assert ensaio.llm.focus == base.llm.focus and ensaio.render.layout == "gta"
+    assert ensaio.detect.min_judge_score == base.detect.min_judge_score
+
+
+def test_config_base_merges_nested_sections(tmp_path):
+    (tmp_path / "a.yaml").write_text("detect:\n  window_seconds: 7\n  trigger_zscore: 4\n")
+    (tmp_path / "b.yaml").write_text("base: a.yaml\ndetect:\n  trigger_zscore: 2\n")
+    config = load_config(tmp_path / "b.yaml")
+    assert (config.detect.window_seconds, config.detect.trigger_zscore) == (7, 2)
 
 
 def test_doctor_runs():

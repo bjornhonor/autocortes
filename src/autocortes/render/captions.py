@@ -115,12 +115,25 @@ def group_words(words: list[Word], per_line: int) -> list[list[Word]]:
     return groups
 
 
-def build_ass(words: list[Word], cfg: CaptionsConfig, width: int, height: int) -> str:
-    """Legenda .ass: cada bloco fica na tela enquanto é falado, com a palavra da vez em destaque."""
+def build_ass(
+    words: list[Word],
+    cfg: CaptionsConfig,
+    width: int,
+    height: int,
+    headline: str = "",
+    duration: float = 0.0,
+) -> str:
+    """Legenda .ass: blocos de palavras com a da vez em destaque e, se houver, a manchete no
+    topo durante o vídeo todo."""
     outline = max(2, round(cfg.font_size * 0.07))
     style = (
         f"Style: Short,{cfg.font},{cfg.font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,"
         f"0,0,0,0,100,100,0,0,1,{outline},2,2,60,60,{cfg.margin_bottom},1"
+    )
+    head_outline = max(3, round(cfg.headline_size * 0.09))
+    head_style = (
+        f"Style: Headline,{cfg.font},{cfg.headline_size},&H00FFFFFF,&H00FFFFFF,&H00000000,"
+        f"&H96000000,0,0,0,0,100,100,0,0,1,{head_outline},3,8,70,70,{cfg.headline_margin_top},1"
     )
     color = ass_color(cfg.highlight_color)
     pop = f"{{\\c{color}\\fscx112\\fscy112\\t(0,100,\\fscx100\\fscy100)}}"
@@ -143,14 +156,25 @@ def build_ass(words: list[Word], cfg: CaptionsConfig, width: int, height: int) -
             events.append(
                 f"Dialogue: 0,{ass_time(word.start)},{ass_time(end)},Short,,0,0,0,,{line}"
             )
+    if headline.strip() and duration > 0:
+        text = headline_markup(headline, color)
+        span = f"0:00:00.00,{ass_time(duration)}"
+        events.insert(0, f"Dialogue: 1,{span},Headline,,0,0,0,,{{\\fad(150,0)}}{text}")
     header = (
         "[Script Info]\nScriptType: v4.00+\n"
         f"PlayResX: {width}\nPlayResY: {height}\n"
         "WrapStyle: 0\nScaledBorderAndShadow: yes\nYCbCr Matrix: TV.709\n\n"
-        f"[V4+ Styles]\nFormat: {STYLE_FIELDS}\n{style}\n\n"
+        f"[V4+ Styles]\nFormat: {STYLE_FIELDS}\n{style}\n{head_style}\n\n"
         f"[Events]\nFormat: {EVENT_FIELDS}\n"
     )
     return header + "".join(f"{event}\n" for event in events)
+
+
+def headline_markup(text: str, color: str) -> str:
+    """Manchete em maiúsculas; a *palavra* entre asteriscos ganha a cor de destaque."""
+    plain = _clean(text, uppercase=True)
+    marked = re.sub(r"\*([^*]+)\*", lambda m: f"{{\\c{color}}}{m[1]}{{\\c&HFFFFFF&}}", plain)
+    return marked.replace("*", "")
 
 
 def ass_time(seconds: float) -> str:

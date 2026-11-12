@@ -50,7 +50,8 @@ class ClipConfig(_Section):
 
 
 class RenderConfig(_Section):
-    layout: Literal["blur", "center", "split", "face"] = "blur"
+    layout: Literal["blur", "center", "split", "face", "gta"] = "blur"
+    gta_crop: float = Field(0.8, gt=0.4, le=1.2)  # largura/altura do jogo no layout gta (4:5)
     width: int = 1080
     height: int = 1920
     fps: int = 30
@@ -69,6 +70,8 @@ class CaptionsConfig(_Section):
     font_size: int = 88
     highlight_color: str = "#FFE100"
     margin_bottom: int = 560
+    headline_size: int = 80  # manchete no topo do vídeo
+    headline_margin_top: int = 150
 
 
 class LLMConfig(_Section):
@@ -76,6 +79,8 @@ class LLMConfig(_Section):
     model: str = "claude-opus-5-5"
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     timeout_seconds: int = Field(180, gt=0)
+    focus: str = ""  # o que é corte bom nestes canais (entra no prompt do juiz)
+    frames: int = Field(5, ge=0, le=10)  # quadros do vídeo mandados ao juiz por pico
 
 
 class PublishConfig(_Section):
@@ -113,8 +118,29 @@ class Secrets(BaseSettings):
 
 
 def load_config(path: Path) -> Config:
-    """Lê o config.yaml; se o arquivo não existir, valem os padrões."""
+    """Lê o config.yaml; se o arquivo não existir, valem os padrões.
+
+    Um arquivo pode começar com `base: outro.yaml`: carrega o outro primeiro e só
+    sobrescreve o que estiver aqui (é assim que o ensaio.yaml herda o config.yaml).
+    """
+    return Config.model_validate(_read_yaml(path))
+
+
+def _read_yaml(path: Path, depth: int = 0) -> dict:
     if not path.exists():
-        return Config()
+        return {}
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return Config.model_validate(data)
+    base = data.pop("base", None)
+    if base and depth < 5:
+        return _merge(_read_yaml(path.parent / base, depth + 1), data)
+    return data
+
+
+def _merge(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged

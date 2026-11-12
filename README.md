@@ -72,7 +72,8 @@ autocortes watch twitch.tv/canal1 twitch.tv/canal2 twitch.tv/canal3
 autocortes queue
 ```
 
-- `watch` grava cada live, lê o chat e procura picos de reação; o Claude julga cada pico, e o short sai em `data/fila/` com um `.txt` de título, descrição e hashtags prontos para colar. `queue` lista o que já está pronto.
+- `watch` grava cada live, lê o chat e procura picos de reação. O Claude julga cada pico lendo a fala e o chat e **vendo 5 quadros da cena**, o que pega lances de jogo que ninguém narrou. Só a nota 8 ou mais vira short (`detect.min_judge_score`), e o short sai em `data/fila/` com uma manchete no topo do vídeo e um `.txt` de título, descrição e hashtags prontos para colar. `queue` lista o que já está pronto.
+- Para ensaiar com limites mais baixos (picos em poucos minutos): `autocortes -c ensaio.yaml watch ...`. O `ensaio.yaml` herda tudo do `config.yaml` (`base: config.yaml`) e só muda a detecção.
 - Pode começar antes da live: ele espera o canal entrar no ar.
 - Sem o Claude disponível (sem login ou sem cota), os picos viram short do mesmo jeito, só pelos sinais, marcados como "sem juiz". `--no-judge` força esse modo.
 - `--minutes 30` para sozinho depois de 30 min, bom para ensaio. Ctrl+C para na hora.
@@ -90,12 +91,13 @@ O short sai em `data/shorts/`: o `.mp4` em 1080×1920 e, ao lado, a legenda `.as
 
 | Layout | Para quê |
 |---|---|
+| `gta` (padrão) | GTA e outros jogos: o jogo ampliado (recorte 4:5) na largura toda, faixa escura em cima para a manchete e a webcam no canto, se `render.facecam` estiver configurada |
 | `blur` | qualquer vídeo: ele inteiro no meio, com o fundo desfocado |
 | `center` | ação no meio da tela |
 | `split` | gameplay com webcam: webcam em cima, jogo embaixo (`--facecam x,y,largura,altura` em pixels do vídeo original) |
 | `face` | podcast e just chatting: o recorte acompanha o rosto |
 
-Na primeira transcrição o Whisper baixa o modelo (~1,6 GB); no primeiro `face`, o detector de rosto (~230 KB). `--no-captions` pula a legenda.
+Na primeira transcrição o Whisper baixa o modelo (~1,6 GB); no primeiro `face`, o detector de rosto (~230 KB). `--no-captions` pula a legenda; `--headline "NEM ELE *ACREDITOU*"` põe uma manchete no topo (a palavra entre asteriscos fica amarela).
 
 ## Estrutura
 

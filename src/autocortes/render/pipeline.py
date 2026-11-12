@@ -61,6 +61,7 @@ def render_short(
     facecam: reframe.FacecamBox | None = None,
     with_captions: bool = True,
     transcript: captions.Transcript | None = None,  # já transcrito (modo live): usa e pronto
+    headline: str = "",  # manchete no topo do vídeo; *palavra* fica em destaque
     on_step: Callable[[str], None] = lambda _: None,
 ) -> RenderResult:
     """Corta [start, end] de `video`, leva para 9:16, legenda e grava `out` (.mp4)."""
@@ -93,10 +94,16 @@ def render_short(
                     notes.append("Nenhuma fala reconhecida: short sem legenda.")
             else:
                 notes.append("O vídeo não tem áudio: short sem legenda.")
-        subtitled = with_captions and transcript is not None and bool(transcript.words)
-        if subtitled:
+        has_words = with_captions and transcript is not None and bool(transcript.words)
+        overlay = has_words or bool(headline.strip())  # algo para escrever por cima do vídeo
+        if overlay:
             ass = captions.build_ass(
-                transcript.words, cfg.captions, cfg.render.width, cfg.render.height
+                transcript.words if has_words and transcript else [],
+                cfg.captions,
+                cfg.render.width,
+                cfg.render.height,
+                headline=headline,
+                duration=clip.duration,
             )
             (work / "captions.ass").write_text(ass, encoding="utf-8")
             _copy_fonts(work / "fonts")
@@ -105,7 +112,7 @@ def render_short(
 
         on_step("Renderizando")
         encoder = _pick_encoder(cfg.render.encoder)
-        finish = "setsar=1" + (",ass=captions.ass:fontsdir=fonts" if subtitled else "")
+        finish = "setsar=1" + (",ass=captions.ass:fontsdir=fonts" if overlay else "")
         graph = (
             f"[0:v]fps={cfg.render.fps},format=yuv420p[src];{framing};"
             f"[framed]{finish},format=yuv420p[v]"
@@ -120,7 +127,7 @@ def render_short(
         run_ffmpeg([*args, "-movflags", "+faststart", str(out)], cwd=work)
 
         captions_file = None
-        if subtitled:
+        if overlay:
             captions_file = out.with_suffix(".ass")
             shutil.copyfile(work / "captions.ass", captions_file)
     return RenderResult(out, clip.duration, layout, encoder, transcript, captions_file, notes)
@@ -161,7 +168,9 @@ def _framing(
         track = facetrack.plan_track(samples, clip.info.width, crop_w, cfg.render.fps)
         (work / "face.cmd").write_text(facetrack.sendcmd_script(track), encoding="utf-8")
         return reframe.face(clip.info, width, height, "face.cmd", track[0][1])
-    raise ValueError(f"layout desconhecido: {layout!r} (use blur, center, split ou face)")
+    if layout == "gta":
+        return reframe.gta(clip.info, width, height, cfg.render.gta_crop, facecam)
+    raise ValueError(f"layout desconhecido: {layout!r} (use blur, center, split, face ou gta)")
 
 
 def _transcribe(clip: _Clip, work: Path, cfg: Config) -> captions.Transcript:

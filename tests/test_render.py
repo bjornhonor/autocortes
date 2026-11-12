@@ -97,6 +97,31 @@ def test_ass_helpers():
         captions.ass_color("amarelo")
 
 
+def test_build_ass_puts_the_headline_on_top_for_the_whole_clip():
+    cfg = CaptionsConfig()
+    ass = captions.build_ass([], cfg, 1080, 1920, headline="nem ele *acreditou*", duration=12.5)
+    assert "Style: Headline,Montserrat ExtraBold,80," in ass
+    event = next(line for line in ass.splitlines() if ",Headline," in line)
+    assert event.startswith("Dialogue: 1,0:00:00.00,0:00:12.50,Headline,")
+    assert event.endswith("NEM ELE {\\c&H00E1FF&}ACREDITOU{\\c&HFFFFFF&}")
+    assert ",Headline," not in captions.build_ass([], cfg, 1080, 1920)  # sem manchete
+
+
+def test_headline_markup_drops_stray_asterisks():
+    marked = captions.headline_markup("nem *ele* acreditou *", "&H00E1FF&")
+    assert marked == "NEM {\\c&H00E1FF&}ELE{\\c&HFFFFFF&} ACREDITOU "
+
+
+def test_gta_layout_zooms_the_game_under_a_headline_band():
+    chain = reframe.gta(HD, 1080, 1920, 0.8)
+    assert "[gamesrc]crop=864:1080:528:0,scale=1080:1350[game]" in chain
+    assert chain.endswith("[bg][game]overlay=0:440[framed]")
+    with_cam = reframe.gta(HD, 1080, 1920, 0.8, (1500, 40, 384, 216))
+    assert with_cam.startswith("[src]split=3[bgsrc][gamesrc][camsrc];")
+    assert "[camsrc]crop=384:216:1500:40,scale=368:-2[cam]" in with_cam
+    assert with_cam.endswith("[base][cam]overlay=W-w-24:464[framed]")
+
+
 def test_fit_crop():
     assert reframe.fit_crop(1920, 1080, 9 / 16) == (608, 1080)
     assert reframe.fit_crop(1080, 1920, 9 / 16) == (1080, 1920)

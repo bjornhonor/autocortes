@@ -26,7 +26,7 @@ from autocortes.config import ClipConfig, Config
 from autocortes.detect import judge
 from autocortes.detect.scorer import Peak, PeakDetector
 from autocortes.detect.signals import ChatWindows, audio_levels
-from autocortes.ffmpeg import run_ffmpeg
+from autocortes.ffmpeg import FFmpegError, run_ffmpeg
 from autocortes.ingest import segments as seg
 from autocortes.ingest.chat import TwitchChat, twitch_channel
 from autocortes.ingest.recorder import Recorder
@@ -38,6 +38,7 @@ QUEUE_DIR = "fila"
 URL_NOISE = {"live", "watch", "c", "channel", "user", "videos"}
 CHAT_BEFORE, CHAT_AFTER, CHAT_SAMPLE = 15.0, 30.0, 40  # chat mandado ao juiz em volta do pico
 CLAUDE_PAUSE = 300  # s sem tentar o Claude depois de uma falha (sem login, limite...)
+FRAME_SPAN = (-10.0, 6.0)  # quadros para o juiz: de 10 s antes a 6 s depois do pico
 REPORT_EVERY = 300  # s entre resumos no terminal
 
 
@@ -60,6 +61,21 @@ def clock(seconds: float) -> str:
 def _z(value: float | None) -> str:
     """z-score para o log: '-' quando o sinal não existe (ex.: canal sem chat)."""
     return "-" if value is None else f"{value:.1f}"
+
+
+def frame_times(peak_t: float, count: int, lo: float, hi: float) -> list[float]:
+    """Instantes dos quadros mandados ao juiz, espalhados em volta do pico.
+
+    Vai mais para antes do pico do que para depois: o lance acontece antes da reação.
+    """
+    if count <= 0:
+        return []
+    first = max(lo, peak_t + FRAME_SPAN[0])
+    last = min(hi - 0.5, peak_t + FRAME_SPAN[1])
+    if count == 1 or last <= first:
+        return [round(min(max(peak_t, lo), hi - 0.5), 2)]
+    step = (last - first) / (count - 1)
+    return [round(first + i * step, 2) for i in range(count)]
 
 
 def slugify(text: str, size: int = 40) -> str:
@@ -254,6 +270,7 @@ class RenderWorker(threading.Thread):
                 out,
                 self.cfg,
                 transcript=captions.Transcript(words, device="reuso"),
+                headline=verdict.headline,
             )
         finally:
             shutil.rmtree(work, ignore_errors=True)
@@ -293,7 +310,7 @@ class JudgeWorker(threading.Thread):
         peak, name = candidate.peak, candidate.channel.name
         lo = max(0.0, peak.t - detect.context_before_seconds)
         hi = peak.t + detect.context_after_seconds
-        transcript, audio_start = self._transcribe(candidate.session, lo, hi)
+        transcript, audio_start, frames, times = self._gather(candidate.session, lo, hi, peak.t)
         words = [
             dataclasses.replace(w, start=w.start + audio_start, end=w.end + audio_start)
             for w in transcript.words
@@ -304,9 +321,9 @@ class JudgeWorker(threading.Thread):
             (audio_start + start, audio_start + end, text)
             for start, end, text in transcript.sentences
         ]
-        prompt = judge.build_prompt(name, peak.t, peak.score, lines, candidate.chat)
+        prompt = judge.build_prompt(name, peak.t, peak.score, lines, candidate.chat, times)
         try:
-            verdict, usage = judge.ask_claude(prompt, self.cfg.llm, clip)
+            verdict, usage = judge.ask_claude(prompt, self.cfg.llm, clip, frames)
         except judge.JudgeError as exc:
             self._claude_paused_until = time.monotonic() + CLAUDE_PAUSE
             pause = CLAUDE_PAUSE // 60
@@ -321,10 +338,13 @@ class JudgeWorker(threading.Thread):
         self.log(name, f"aprovado (nota {verdict.score}): {verdict.title}", "green")
         return Approved(candidate, verdict, words, judged=True)
 
-    def _transcribe(
-        self, session: seg.Session, lo: float, hi: float
-    ) -> tuple[captions.Transcript, float]:
-        """Transcreve [lo, hi] da gravação; devolve a transcrição e onde o áudio começa."""
+    def _gather(
+        self, session: seg.Session, lo: float, hi: float, peak_t: float
+    ) -> tuple[captions.Transcript, float, list[bytes], list[float]]:
+        """Transcreve [lo, hi] da gravação e tira quadros em volta do pico.
+
+        Devolve a transcrição, onde o áudio começa, os quadros (JPEG) e os instantes deles.
+        """
         work = Path(tempfile.mkdtemp(prefix="autocortes-juiz-"))
         try:
             source = work / "trecho.ts"
@@ -334,7 +354,20 @@ class JudgeWorker(threading.Thread):
             pcm = ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le"]
             window = ["-ss", f"{start - offset:.3f}", "-t", f"{hi - start:.3f}"]
             run_ffmpeg([*window, "-i", str(source), *pcm, str(wav)])
-            return captions.transcribe(wav, self.cfg.captions, self.cfg.language), start
+            transcript = captions.transcribe(wav, self.cfg.captions, self.cfg.language)
+            frames: list[bytes] = []
+            times: list[float] = []
+            for t in frame_times(peak_t, self.cfg.llm.frames, start, hi):
+                jpg = work / f"quadro_{len(frames)}.jpg"
+                grab = ["-ss", f"{t - offset:.3f}", "-i", str(source), "-frames:v", "1"]
+                try:
+                    run_ffmpeg([*grab, "-vf", "scale=640:-2", "-q:v", "5", str(jpg)])
+                except FFmpegError:
+                    continue  # um quadro a menos não impede o julgamento
+                if jpg.exists():
+                    frames.append(jpg.read_bytes())
+                    times.append(t)
+            return transcript, start, frames, times
         finally:
             shutil.rmtree(work, ignore_errors=True)
 

@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import subprocess
@@ -12,7 +13,7 @@ from autocortes.detect.signals import ChatWindows, RollingZ, chat_weight
 from autocortes.ingest import segments as seg
 from autocortes.ingest.chat import TwitchChat, parse_line, twitch_channel
 from autocortes.ingest.recorder import Recorder
-from autocortes.live import channel_slug, clock, slugify
+from autocortes.live import channel_slug, clock, frame_times, slugify
 
 
 @pytest.mark.parametrize(
@@ -184,6 +185,7 @@ def claude_output(**answer) -> str:
         "end": 1840.2,
         "reason": "virada clara",
         "title": "Caiu 4 vezes no mesmo buraco",
+        "headline": "NEM ELE *ACREDITOU*",
         "description": "E na quinta deu certo.",
         "hashtags": ["#GTA6", "Cortes"],
     } | answer
@@ -199,6 +201,19 @@ def claude_output(**answer) -> str:
             "structured_output": verdict,
         }
     )
+
+
+def claude_stream_output(**answer) -> str:
+    """Saída em stream-json: um evento por linha, o veredito no último (type=result)."""
+    result = json.loads(claude_output(**answer))
+    events = [{"type": "system", "subtype": "init"}, {"type": "assistant", "message": {}}, result]
+    return "\n".join(json.dumps(event) for event in events) + "\n"
+
+
+def test_parse_response_reads_the_result_event_of_stream_json():
+    verdict, usage = judge.parse_response(claude_stream_output(score=9))
+    assert verdict.score == 9 and verdict.headline == "NEM ELE *ACREDITOU*"
+    assert usage.cost_usd == 0.04
 
 
 def test_parse_response_reads_structured_output_and_usage():
@@ -250,30 +265,46 @@ def test_subscription_env_removes_spaces_from_a_pasted_token(monkeypatch):
     assert judge.subscription_env()["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-abcdef"
 
 
-def test_ask_claude_makes_a_lean_call(monkeypatch):
+def test_ask_claude_sends_text_and_frames_as_stream_json(monkeypatch):
     calls = {}
 
     def fake_run(cmd, **kwargs):
         calls.update(cmd=cmd, **kwargs)
-        return subprocess.CompletedProcess(cmd, 0, claude_output(), "")
+        return subprocess.CompletedProcess(cmd, 0, claude_stream_output(), "")
 
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-teste")
     monkeypatch.setattr(judge.shutil, "which", lambda _name: "claude")
     monkeypatch.setattr(judge.subprocess, "run", fake_run)
-    verdict, _ = judge.ask_claude("o trecho", LLMConfig(), ClipConfig())
+    llm = LLMConfig(focus="GTA, lances de jogo")
+    verdict, _ = judge.ask_claude("o trecho", llm, ClipConfig(), [b"quadro1"])
     cmd = calls["cmd"]
-    assert verdict.is_clip and cmd[:2] == ["claude", "-p"]
+    assert verdict.is_clip and verdict.headline == "NEM ELE *ACREDITOU*"
+    assert cmd[:2] == ["claude", "-p"] and cmd[cmd.index("--input-format") + 1] == "stream-json"
     assert cmd[cmd.index("--tools") + 1] == "" and "--strict-mcp-config" in cmd
     assert cmd[cmd.index("--model") + 1] == "claude-opus-5-5"
+    assert "Foco destes canais: GTA, lances de jogo" in cmd[cmd.index("--system-prompt") + 1]
     assert json.loads(cmd[cmd.index("--json-schema") + 1]) == judge.SCHEMA
-    assert calls["input"] == "o trecho" and "ANTHROPIC_API_KEY" not in calls["env"]
+    content = json.loads(calls["input"])["message"]["content"]
+    assert content[0] == {"type": "text", "text": "o trecho"}
+    assert content[1]["type"] == "image"
+    assert content[1]["source"]["data"] == base64.b64encode(b"quadro1").decode()
+    assert "ANTHROPIC_API_KEY" not in calls["env"]
 
 
-def test_build_prompt_has_transcript_and_chat():
+def test_build_prompt_has_transcript_chat_and_frames():
     lines, chat = [(1826.6, 1829.9, " CONSEGUI ")], [(1831.0, "fulano", "KEKW")]
     prompt = judge.build_prompt("gaules", 1832.0, 4.1, lines, chat)
     assert "t=1832" in prompt and "[1826.6-1829.9] CONSEGUI" in prompt
-    assert "[1831] fulano: KEKW" in prompt
+    assert "[1831] fulano: KEKW" in prompt and "Quadros" not in prompt
+    with_frames = judge.build_prompt("gaules", 1832.0, 4.1, lines, chat, [1822.0, 1830.0])
+    assert "Quadros anexados, em ordem, nos instantes t=1822, 1830 s." in with_frames
+
+
+def test_frame_times_spread_around_the_peak():
+    assert frame_times(100, 5, 40, 120) == [90, 94, 98, 102, 106]
+    assert frame_times(5, 5, 0, 25) == [0, 2.75, 5.5, 8.25, 11.0]  # começo da gravação
+    assert frame_times(100, 1, 40, 120) == [100]
+    assert frame_times(100, 0, 40, 120) == []
 
 
 def test_names_and_clock():

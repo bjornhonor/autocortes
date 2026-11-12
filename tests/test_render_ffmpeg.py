@@ -36,7 +36,7 @@ def testsrc(tmp_path_factory) -> Path:
     return make_video(path, "testsrc2=size=1280x720:rate=30:duration=3", with_audio=True)
 
 
-@pytest.mark.parametrize("layout", ["blur", "center", "split"])
+@pytest.mark.parametrize("layout", ["blur", "center", "split", "gta"])
 def test_layouts_render_a_vertical_video(testsrc, tmp_path, layout):
     result = render_short(
         testsrc,
@@ -47,11 +47,13 @@ def test_layouts_render_a_vertical_video(testsrc, tmp_path, layout):
         layout=layout,
         facecam=(960, 0, 320, 180),
         with_captions=False,
+        headline="TESTE *DE* MANCHETE",
     )
     info = probe(result.path)
     assert (info.width, info.height) == (1080, 1920)
     assert info.has_audio
     assert info.duration == pytest.approx(2.0, abs=0.15)
+    assert result.captions_file is not None  # a manchete sai mesmo sem legenda
 
 
 def test_face_layout_moves_the_crop_with_the_track(tmp_path, monkeypatch):

@@ -52,11 +52,12 @@ O score é a média ponderada dos sinais disponíveis (`detect.weights`: chat 0,
 
 ### Claude, só nos picos
 
-Para cada pico, o juiz transcreve só o trecho em volta (`context_before_seconds` + `context_after_seconds`, padrão 90 + 30 s) com o Whisper, que fica carregado na memória, e manda ao Claude a transcrição com tempo e uma amostra do chat perto do pico. A resposta é estruturada (`--json-schema`):
+Para cada pico, o juiz transcreve só o trecho em volta (`context_before_seconds` + `context_after_seconds`, padrão 90 + 30 s) com o Whisper, que fica carregado na memória, e tira `llm.frames` quadros (padrão 5, JPEG 640×360) de 10 s antes a 6 s depois do pico. Manda ao Claude a transcrição com início e fim de cada frase, uma amostra do chat perto do pico e os quadros, numa mensagem em stream-json. Assim ele enxerga o lance mesmo sem ninguém falar: o chat e o áudio dizem *quando*, os quadros mostram *o quê*. Os critérios do canal entram no prompt por `llm.focus` (no `config.yaml`, os de GTA). A resposta é estruturada (`--json-schema`):
 
-- `is_clip`, `score` (0 a 10) e o motivo; abaixo de `min_judge_score` (padrão 7), o pico é descartado
+- `is_clip`, `score` (0 a 10) e o motivo; abaixo de `min_judge_score` (padrão 8), o pico é descartado
 - `start`/`end` em frases completas, entre `clip.min_seconds` e `clip.max_seconds`
 - `title`, `description` e `hashtags` em pt-BR
+- `headline`: a manchete sensacionalista do topo do vídeo, com a palavra mais forte entre asteriscos
 
 O Claude roda pela **assinatura**, via CLI do Claude Code (`claude -p`, versão 2.1.280 ou mais nova para o Opus 5.5), com o modelo de `llm.model` (padrão `claude-opus-5-5`, esforço `medium`). Medido em 11/11/2026: ~2,8 mil tokens de entrada e ~0,9 mil de saída por chamada, US$ 0,04 em preço de API, ~10 s de resposta. A chamada é enxuta, para gastar pouco da cota: prompt de sistema próprio, sem ferramentas (`--tools ""`), sem MCP e sem salvar sessão. O ambiente do subprocesso vai sem `ANTHROPIC_API_KEY`, porque com ela o `claude -p` cobraria pela API. O login vem de `CLAUDE_CODE_OAUTH_TOKEN` (gerado com `claude setup-token`; espaços colados junto são removidos) ou do login do Claude Code. As mensagens do chat entram no prompt como dados, e o prompt manda ignorar pedidos escritos nelas.
 
@@ -74,7 +75,8 @@ Uma única passada de `ffmpeg` por short: corta → reenquadra → legenda → n
 
 | Layout | Ideal para | Como |
 |---|---|---|
-| `blur` (padrão) | qualquer coisa | vídeo inteiro no centro; o fundo é o próprio vídeo ampliado e desfocado |
+| `gta` (padrão) | GTA e jogos em geral | faixa de 440 px em cima para a manchete, o jogo recortado no centro em 4:5 (`render.gta_crop`) e ampliado para 1080×1350, fundo desfocado e escurecido, webcam opcional no canto de cima do jogo |
+| `blur` | qualquer coisa | vídeo inteiro no centro; o fundo é o próprio vídeo ampliado e desfocado |
 | `center` | ação no meio da tela | recorte 9:16 central |
 | `split` | gameplay com facecam | facecam (`render.facecam` = x, y, w, h no original) em cima, gameplay embaixo |
 | `face` | podcast, just chatting | segue o rosto (detalhes abaixo) |
@@ -100,6 +102,7 @@ Filtro do `blur` (o fundo é desfocado em 1/4 da resolução, que é bem mais r�
 - `faster-whisper` com `word_timestamps=True` e filtro de voz (VAD), no modelo `captions.whisper_model`, idioma `pt`. Com `captions.device: auto` tenta a GPU e, se faltarem as DLLs do CUDA, cai para a CPU e avisa. No modo live, a transcrição feita pelo juiz é reaproveitada na legenda.
 - Arquivo `.ass` estilo shorts: blocos de até `words_per_line` palavras (pausa > 0,6 s ou fim de frase começam outro bloco), em maiúsculas, fonte grossa com contorno, a palavra falada em destaque (`highlight_color`) com um "pop" de 112%.
 - Posição: `margin_bottom` px acima da borda, fora da área coberta pela interface do TikTok/Reels (legenda do post, botões).
+- Manchete: a `headline` do juiz fica no topo durante o vídeo todo, em maiúsculas, com contorno grosso, e a palavra entre asteriscos vai na cor de destaque. Ela sai mesmo quando o trecho não tem fala.
 - Queimada com o filtro `ass`; a fonte (Montserrat ExtraBold, licença OFL) vem dentro do pacote, em `src/autocortes/assets/fonts`, e é copiada para a pasta de trabalho.
 
 **Codificação.** H.264, `yuv420p`, 30 fps, AAC 48 kHz, `-movflags +faststart`, áudio normalizado com `loudnorm` para -14 LUFS. É um perfil aceito pelas três plataformas. Com `render.encoder: auto`, um teste de um quadro decide entre `h264_nvenc` (GPU) e `libx264`.

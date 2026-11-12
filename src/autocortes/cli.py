@@ -32,6 +32,7 @@ class Layout(StrEnum):
     center = "center"
     split = "split"
     face = "face"
+    gta = "gta"
 
 
 @app.callback()
@@ -116,6 +117,9 @@ def render(
         str | None, typer.Option(help="Webcam no vídeo original (layout split): x,y,w,h.")
     ] = None,
     captions: Annotated[bool, typer.Option(help="Gerar legenda.")] = True,
+    headline: Annotated[
+        str, typer.Option(help="Manchete no topo do vídeo; *palavra* fica em destaque.")
+    ] = "",
 ) -> None:
     """Gera um short 9:16 legendado a partir de um trecho do vídeo."""
     cfg: Config = ctx.obj
@@ -139,6 +143,7 @@ def render(
                 layout=chosen,
                 facecam=box,
                 with_captions=captions,
+                headline=headline,
                 on_step=lambda step: status.update(f"{step}..."),
             )
     except (RuntimeError, ValueError) as exc:  # FFmpegError é um RuntimeError

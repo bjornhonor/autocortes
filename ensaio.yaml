@@ -1,0 +1,11 @@
+# Ensaio: tudo do config.yaml, mas com limites mais baixos para os picos aparecerem em
+# poucos minutos. Uso: autocortes -c ensaio.yaml watch twitch.tv/canal --minutes 10
+base: config.yaml
+
+detect:
+  baseline_minutes: 2        # histórico curto: começa a disparar em ~1 min
+  trigger_zscore: 2.5
+  min_gap_seconds: 45
+  max_clips_per_hour: 30
+  context_before_seconds: 60
+  context_after_seconds: 20

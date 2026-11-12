@@ -21,7 +21,7 @@ detect:
   max_clips_per_hour: 6      # por canal
   context_before_seconds: 90 # quanto da live o juiz lê antes do pico
   context_after_seconds: 30  # e depois
-  min_judge_score: 7         # nota mínima (0 a 10) do juiz para virar short
+  min_judge_score: 8         # nota mínima (0 a 10) do juiz para virar short: só os melhores
 
 clip:
   min_seconds: 15
@@ -30,13 +30,14 @@ clip:
   post_roll_seconds: 8       # e termina esse tanto depois
 
 render:
-  layout: blur               # blur | center | split | face
+  layout: gta                # gta | blur | center | split | face
+  gta_crop: 0.8              # recorte do jogo no layout gta (largura/altura; 0.8 = 4:5)
   width: 1080
   height: 1920
   fps: 30
   encoder: auto              # auto | libx264 | h264_nvenc
   loudness_lufs: -14         # volume padrão das redes
-  facecam: null              # [x, y, w, h] da webcam no vídeo original (layout split)
+  facecam: null              # [x, y, w, h] da webcam no vídeo original (layouts split e gta)
 
 captions:
   whisper_model: large-v3-turbo
@@ -48,12 +49,21 @@ captions:
   font_size: 88
   highlight_color: "#FFE100" # cor da palavra que está sendo falada
   margin_bottom: 560         # px acima da borda, fora da área coberta pela interface dos apps
+  headline_size: 80          # manchete no topo (o juiz escreve; *palavra* fica em destaque)
+  headline_margin_top: 150
 
 llm:
   backend: claude-code       # assinatura do Claude, pela CLI do Claude Code (`claude -p`)
   model: claude-opus-5-5
   effort: medium             # low | medium | high | xhigh | max
   timeout_seconds: 180
+  frames: 5                  # quadros do vídeo que o juiz vê em cada pico (0 = só texto)
+  focus: >-
+    GTA (gameplay e roleplay). Nota 8 ou mais é: fuga ou perseguição insana, batida ou
+    capotagem absurda, morte ridícula ou "cagada" épica, jogada muito boa (tiro, manobra,
+    fuga impossível), bug engraçado, interação de RP hilária ou tensa, reação exagerada do
+    streamer. Use os quadros para ver o lance mesmo sem fala. Conversa parada, menu, tela
+    de carregamento e mapa valem nota baixa.
 
 publish:
   platforms: [youtube, instagram, tiktok]
