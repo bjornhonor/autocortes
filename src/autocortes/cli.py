@@ -1,6 +1,8 @@
 """Linha de comando do autocortes."""
 
+import json
 import sys
+import time
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -9,8 +11,9 @@ import typer
 from dotenv import find_dotenv, load_dotenv
 from rich.console import Console
 from rich.markup import escape
+from rich.table import Table
 
-from autocortes import __version__
+from autocortes import __version__, live
 from autocortes.config import Config, load_config
 from autocortes.doctor import print_report, run_checks
 from autocortes.render.pipeline import render_short
@@ -48,6 +51,55 @@ def doctor() -> None:
     """Confere ffmpeg, GPU, pacotes de cada fase e credenciais."""
     ok = print_report(run_checks(), console)
     raise typer.Exit(code=0 if ok else 1)
+
+
+@app.command()
+def watch(
+    ctx: typer.Context,
+    urls: Annotated[list[str], typer.Argument(help="Lives para acompanhar, ex.: twitch.tv/canal.")],
+    judge: Annotated[bool, typer.Option(help="Pedir ao Claude para julgar cada pico.")] = True,
+    minutes: Annotated[
+        float | None, typer.Option(help="Parar sozinho depois de N minutos (testes).")
+    ] = None,
+) -> None:
+    """Acompanha uma ou mais lives ao mesmo tempo; os shorts saem em data/fila."""
+    cfg: Config = ctx.obj
+
+    def log(channel: str, message: str, style: str = "") -> None:
+        line = f"[dim]{time.strftime('%H:%M:%S')}[/] [bold]{escape(channel)}[/] {escape(message)}"
+        console.print(f"[{style}]{line}[/]" if style else line)
+
+    folder = escape(str(cfg.data_dir / live.QUEUE_DIR))
+    console.print(f"Acompanhando {len(urls)} live(s); shorts em {folder}. Ctrl+C para parar.")
+    try:
+        live.watch(urls, cfg, use_claude=judge, minutes=minutes, log=log)
+    except KeyboardInterrupt:
+        console.print("Parado.")
+
+
+@app.command("queue")
+def show_queue(
+    ctx: typer.Context, limit: Annotated[int, typer.Option(help="Quantos mostrar.")] = 20
+) -> None:
+    """Lista os shorts prontos na fila de revisão, do mais novo para o mais antigo."""
+    cfg: Config = ctx.obj
+    folder = cfg.data_dir / live.QUEUE_DIR
+    items = sorted(folder.glob("*.json"), reverse=True)[:limit]
+    if not items:
+        console.print(f"Fila vazia ({escape(str(folder))}).")
+        return
+    table = Table(title=f"Fila de revisão: {folder}")
+    for column in ("Quando", "Canal", "Nota", "Título", "Arquivo"):
+        table.add_column(column)
+    for path in items:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        score = f"{data['score']}" + ("" if data.get("judged") else "*")
+        when = data["created"][5:16].replace("T", " ")
+        table.add_row(
+            when, escape(data["channel"]), score, escape(data["title"]), escape(data["video"])
+        )
+    console.print(table)
+    console.print("* sem juiz: corte só pelos sinais de chat e áudio")
 
 
 @app.command()

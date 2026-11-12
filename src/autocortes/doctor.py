@@ -2,6 +2,7 @@
 
 import importlib.util
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -16,23 +17,13 @@ from autocortes.ffmpeg import INSTALL_HINT, encoder_error, find_tool
 # extra do pyproject -> (rótulo, [(módulo importável, pacote no PyPI)])
 STAGE_PACKAGES: dict[str, tuple[str, list[tuple[str, str]]]] = {
     "render": (
-        "Render (fase 1)",
+        "Render",
         [("faster_whisper", "faster-whisper"), ("cv2", "opencv-python")],
     ),
-    "detect": (
-        "Detecção (fase 2)",
-        [("numpy", "numpy"), ("anthropic", "anthropic")],
-    ),
-    "ingest": (
-        "Captura (fases 2-3)",
-        [
-            ("streamlink", "streamlink"),
-            ("yt_dlp", "yt-dlp"),
-            ("chat_downloader", "chat-downloader"),
-        ],
-    ),
+    "detect": ("Detecção", [("numpy", "numpy")]),
+    "ingest": ("Captura da live", [("streamlink", "streamlink")]),
     "publish": (
-        "Publicação (fase 4)",
+        "Publicação",
         [
             ("googleapiclient", "google-api-python-client"),
             ("google_auth_oauthlib", "google-auth-oauthlib"),
@@ -134,20 +125,27 @@ def credential_checks() -> list[Check]:
     s = Secrets()
     group = "Credenciais (.env)"
     youtube = s.youtube_client_secrets
+    claude = shutil.which("claude")
     return [
-        Check(group, "ANTHROPIC_API_KEY", bool(s.anthropic_api_key), "fase 2"),
-        Check(group, "YOUTUBE_CLIENT_SECRETS", youtube.is_file(), f"fase 4 - {youtube}"),
+        Check(group, "CLI claude (juiz)", claude is not None, claude or "instale o Claude Code"),
+        Check(
+            group,
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            bool(s.claude_code_oauth_token),
+            "assinatura ok" if s.claude_code_oauth_token else "rode `claude setup-token`",
+        ),
+        Check(group, "YOUTUBE_CLIENT_SECRETS", youtube.is_file(), f"publicação - {youtube}"),
         Check(
             group,
             "INSTAGRAM_USER_ID + ACCESS_TOKEN",
             bool(s.instagram_user_id and s.instagram_access_token),
-            "fase 4",
+            "publicação",
         ),
         Check(
             group,
             "TIKTOK_CLIENT_KEY + SECRET",
             bool(s.tiktok_client_key and s.tiktok_client_secret),
-            "fase 4",
+            "publicação",
         ),
     ]
 

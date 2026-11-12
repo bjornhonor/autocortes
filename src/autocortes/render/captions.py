@@ -1,9 +1,10 @@
 """Legendas estilo shorts: transcrição palavra a palavra (faster-whisper) e arquivo .ass."""
 
+import functools
 import os
 import re
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from autocortes.config import CaptionsConfig
@@ -30,44 +31,55 @@ class Word:
 @dataclass(frozen=True)
 class Transcript:
     words: list[Word]
-    device: str  # onde o Whisper rodou: "cuda" ou "cpu"
+    device: str  # onde o Whisper rodou: "cuda", "cpu" ou "reuso" (veio pronto do juiz)
     gpu_error: str | None = None  # por que a GPU foi descartada, quando se tentou usá-la
+    sentences: list[tuple[float, float, str]] = field(default_factory=list)  # início, fim, texto
+
+
+_gpu_error: str | None = None  # a GPU já falhou nesta execução: não tenta de novo a cada trecho
+
+
+@functools.cache
+def _model(name: str, device: str, compute_type: str):
+    """Carrega o Whisper uma vez por processo (leva alguns segundos)."""
+    from faster_whisper import WhisperModel
+
+    return WhisperModel(name, device=device, compute_type=compute_type)
 
 
 def transcribe(audio: Path, cfg: CaptionsConfig, language: str) -> Transcript:
     """Transcreve um WAV mono 16 kHz com timestamps por palavra.
 
     Com device=auto tenta a GPU primeiro; se faltarem as DLLs do CUDA (cuBLAS/cuDNN),
-    cai para a CPU.
+    cai para a CPU e não tenta mais a GPU nesta execução.
     """
+    global _gpu_error
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     import ctranslate2
-    from faster_whisper import WhisperModel
 
     samples = read_wav(audio)
     if cfg.device == "auto":
-        devices = ["cuda", "cpu"] if ctranslate2.get_cuda_device_count() > 0 else ["cpu"]
+        gpu = _gpu_error is None and ctranslate2.get_cuda_device_count() > 0
+        devices = ["cuda", "cpu"] if gpu else ["cpu"]
     else:
         devices = [cfg.device]
 
-    gpu_error = None
     for device in devices:
         try:
-            model = WhisperModel(cfg.whisper_model, device=device, compute_type=cfg.compute_type)
+            model = _model(cfg.whisper_model, device, cfg.compute_type)
             segments, _ = model.transcribe(
                 samples, language=language, word_timestamps=True, vad_filter=True
             )
-            words = [
-                Word(w.start, w.end, w.word.strip())
-                for segment in segments
-                for w in segment.words or []
-                if w.word.strip()
-            ]
-            return Transcript(words, device, gpu_error)
+            words, sentences = [], []
+            for segment in segments:
+                sentences.append((segment.start, segment.end, segment.text.strip()))
+                words += [Word(w.start, w.end, w.word.strip()) for w in segment.words or []]
+            words = [w for w in words if w.text]
+            return Transcript(words, device, _gpu_error, sentences)
         except (RuntimeError, OSError) as exc:
             if device != "cuda" or device == devices[-1]:
                 raise
-            gpu_error = (str(exc).splitlines() or [type(exc).__name__])[0]
+            _gpu_error = (str(exc).splitlines() or [type(exc).__name__])[0]
     raise AssertionError("nenhum dispositivo disponível para o Whisper")
 
 

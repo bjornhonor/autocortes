@@ -20,14 +20,13 @@ class _Section(BaseModel):
 
 class CaptureConfig(_Section):
     quality: str = "best"
-    segment_seconds: int = Field(60, gt=0)
-    retention_hours: int = Field(12, gt=0)
+    segment_seconds: int = Field(10, gt=0)
+    retention_hours: float = Field(2, gt=0)
 
 
 class DetectWeights(_Section):
-    chat: float = 0.5
-    audio: float = 0.3
-    viewer_clips: float = 0.2
+    chat: float = Field(0.6, ge=0)
+    audio: float = Field(0.4, ge=0)
 
 
 class DetectConfig(_Section):
@@ -38,6 +37,9 @@ class DetectConfig(_Section):
     weights: DetectWeights = Field(default_factory=DetectWeights)
     min_gap_seconds: int = 90
     max_clips_per_hour: int = 6
+    context_before_seconds: int = Field(90, gt=0)
+    context_after_seconds: int = Field(30, gt=0)
+    min_judge_score: int = Field(7, ge=0, le=10)
 
 
 class ClipConfig(_Section):
@@ -70,8 +72,10 @@ class CaptionsConfig(_Section):
 
 
 class LLMConfig(_Section):
+    backend: Literal["claude-code"] = "claude-code"  # assinatura do Claude via `claude -p`
     model: str = "claude-opus-5-5"
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    timeout_seconds: int = Field(180, gt=0)
 
 
 class PublishConfig(_Section):
@@ -98,7 +102,7 @@ class Secrets(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore", env_ignore_empty=True)
 
-    anthropic_api_key: str | None = None
+    claude_code_oauth_token: str | None = None  # `claude setup-token`: juiz pela assinatura
     youtube_client_secrets: Path = Path("secrets/youtube_client_secret.json")
     instagram_user_id: str | None = None
     instagram_access_token: str | None = None

@@ -6,8 +6,8 @@ data_dir: data
 
 capture:
   quality: best              # qualidade pedida ao streamlink
-  segment_seconds: 60        # tamanho de cada pedaço gravado
-  retention_hours: 12        # apaga segmentos antigos que não viraram corte
+  segment_seconds: 10        # pedaços curtos: o corte sai mais rápido na live
+  retention_hours: 2         # apaga a gravação mais velha que isso (~3,5 GB/h por live em 1080p)
 
 detect:
   window_seconds: 5          # resolução das séries de sinais
@@ -15,17 +15,19 @@ detect:
   trigger_zscore: 3.0        # quantos desvios acima do normal disparam um candidato
   reaction_delay_seconds: 8  # o chat reage depois do momento; recua esse tanto
   weights:
-    chat: 0.5
-    audio: 0.3
-    viewer_clips: 0.2
-  min_gap_seconds: 90        # distância mínima entre dois cortes
-  max_clips_per_hour: 6
+    chat: 0.6
+    audio: 0.4
+  min_gap_seconds: 90        # distância mínima entre dois cortes do mesmo canal
+  max_clips_per_hour: 6      # por canal
+  context_before_seconds: 90 # quanto da live o juiz lê antes do pico
+  context_after_seconds: 30  # e depois
+  min_judge_score: 7         # nota mínima (0 a 10) do juiz para virar short
 
 clip:
   min_seconds: 15
   max_seconds: 60
-  pre_roll_seconds: 20       # contexto antes do pico (o Claude refina)
-  post_roll_seconds: 8
+  pre_roll_seconds: 20       # sem juiz: o corte começa esse tanto antes do pico
+  post_roll_seconds: 8       # e termina esse tanto depois
 
 render:
   layout: blur               # blur | center | split | face
@@ -48,8 +50,10 @@ captions:
   margin_bottom: 560         # px acima da borda, fora da área coberta pela interface dos apps
 
 llm:
+  backend: claude-code       # assinatura do Claude, pela CLI do Claude Code (`claude -p`)
   model: claude-opus-5-5
   effort: medium             # low | medium | high | xhigh | max
+  timeout_seconds: 180
 
 publish:
   platforms: [youtube, instagram, tiktok]

@@ -2,61 +2,75 @@
 
 ## Linha do tempo única
 
-Tudo se alinha num relógio só: **`t` = segundos desde o início da gravação**. O gravador anota o horário (UTC) em que começou, e cada mensagem de chat, palavra transcrita e janela de áudio é convertida para `t`. Um momento é sempre um par `(início, fim)` nessa escala.
+Tudo se alinha num relógio só: **`t` = segundos desde o início da gravação** (da sessão). O gravador anota o horário em que o primeiro quadro foi gravado, e cada mensagem de chat, palavra transcrita e janela de áudio é convertida para `t`. Um momento é sempre um par `(início, fim)` nessa escala.
 
-O chat reage alguns segundos *depois* do que aconteceu (tempo de ver + digitar). Por isso o pico do chat é recuado `detect.reaction_delay_seconds` (padrão 8 s) e o candidato ganha `clip.pre_roll_seconds` de contexto antes. Esse atraso é calibrado na fase 2, comparando os picos com momentos marcados na mão.
+O chat reage alguns segundos *depois* do que aconteceu (tempo de ver + digitar). Por isso o pico do chat é recuado `detect.reaction_delay_seconds` (padrão 8 s), e o juiz lê `context_before_seconds` antes e `context_after_seconds` depois do pico para achar o começo certo.
+
+## Modo live — `live.py`
+
+`autocortes watch <url> [<url> ...]` acompanha várias lives ao mesmo tempo:
+
+```
+por canal:   gravador (streamlink -> ffmpeg)      chat (IRC da Twitch)
+                         \                            /
+                     analisador: sinais por janela -> picos
+                                       |
+para todos:        juiz (Whisper + Claude) -> renderizador -> data/fila/
+```
+
+- Cada canal tem gravador, chat e analisador próprios; os analisadores rodam no laço principal a cada 2 s.
+- Um **juiz** e um **renderizador** atendem todos os canais, um trabalho por vez cada, para não disputarem a CPU. O juiz pega primeiro o pico mais forte.
+- Se o Claude falhar (sem login, limite da assinatura), o juiz deixa o Claude de lado por 5 min e os picos viram short do mesmo jeito, só pelos sinais: corte fixo em volta do pico (`clip.pre_roll_seconds` / `post_roll_seconds`), marcado como "sem juiz". Nenhum momento se perde por falta de cota.
+- A fila de revisão (`data/fila/`) recebe, por short: o `.mp4`, um `.txt` com título, descrição e hashtags prontos para colar e um `.json` com tudo (canal, nota, motivo, tempos). `autocortes queue` lista a fila. Cada veredito do Claude, com o consumo, fica em `data/fila/juiz.jsonl`.
 
 ## 1. Captura — `ingest/`
 
 ```
-streamlink --stdout --twitch-disable-ads <url> best
-  | ffmpeg -i pipe:0 -c copy -f segment -segment_time 60 -reset_timestamps 1
-           -segment_list segments.csv seg_%05d.ts
+python -m streamlink --stdout --twitch-low-latency --retry-streams 30 <url> best
+  | ffmpeg -i pipe:0 -c copy -f segment -segment_time 10
+           -segment_list segments.csv -segment_list_type csv seg_%06d.ts
 ```
 
 - **Sem reencode** (`-c copy`): gravar custa quase nada de CPU.
-- **Segmentos `.ts` de 60 s**: se algo cair, o que já foi gravado continua íntegro; o que passou de `capture.retention_hours` e não virou corte é apagado; o `segments.csv` guarda início e fim de cada segmento.
-- **Reconexão**: se a live cair e voltar, começa um novo grupo de segmentos com novo horário de início.
-- **Chat**: Twitch por IRC anônimo (`irc.chat.twitch.tv`, nick `justinfan<número>`, sem login); YouTube via `chat-downloader`; Kick (websocket) fica para depois. Cada mensagem vira `(t, autor, texto)`.
-- **VOD** (fase 2): `yt-dlp` baixa o vídeo; o chat vem do `live_chat` do YouTube ou do `chat-downloader` (Twitch). Assim dá para desenvolver e calibrar sem esperar live.
+- **Segmentos `.ts` de 10 s**: o corte sai pouco depois do momento, e se algo cair o que já foi gravado continua íntegro. Os timestamps não são zerados a cada segmento, então um trecho que atravessa segmentos é só emendar os arquivos (MPEG-TS aceita emenda byte a byte).
+- **Retenção curta** (`capture.retention_hours`, padrão 2 h): uma live em 1080p grava ~3,5 GB por hora, e o corte sai em minutos.
+- **Esperando a live**: com `--retry-streams 30`, o streamlink tenta de 30 em 30 s até o canal entrar no ar. Se a live cair e voltar, começa uma sessão nova (pasta nova, relógio novo).
+- **Chat da Twitch**: IRC anônimo (`irc.chat.twitch.tv`, nick `justinfan<número>`, sem login). YouTube e Kick ficam para depois; nesses canais os picos saem só pelo áudio.
 
 ## 2. Detecção — `detect/`
 
 ### Sinais baratos, o tempo todo
 
-Séries em janelas de `detect.window_seconds` (5 s):
+Séries em janelas de `detect.window_seconds` (5 s), em z-score robusto (mediana e MAD) contra os últimos `baseline_minutes`:
 
 | Sinal | Cálculo | Observação |
 |---|---|---|
-| `chat` | mensagens por janela, em z-score contra a média móvel de `baseline_minutes` | conta autores únicos (spam de uma pessoa não pesa); mensagens de risada/hype (`KEKW`, `LUL`, `kkkk`, `Pog`, "clipa") valem mais |
-| `audio` | volume (RMS) por janela, em z-score | grito, risada, susto; depois dá para trocar por um classificador de som (risada, aplauso) |
-| `viewer_clips` | clipes criados pelos viewers (Twitch API `GET /helix/clips`) | sinal raro e forte: a audiência já validou |
+| `chat` | peso das mensagens na janela | cada autor conta no máximo 2 vezes por janela (spam não pesa); risada e hype (`KEKW`, `kkkk`, `Pog`, "clipa", "NAOOO") valem o dobro |
+| `audio` | volume (dB) de cada segundo, médio na janela | grito, risada, susto; depois dá para trocar por um classificador de som |
 
-O score é a soma ponderada (`detect.weights`). Picos acima de `trigger_zscore` viram candidatos; candidatos que se sobrepõem se fundem, e há distância mínima entre cortes (`min_gap_seconds`) e teto por hora (`max_clips_per_hour`).
-
-Em paralelo, o `faster-whisper` transcreve cada segmento assim que ele fecha. A transcrição alimenta o Claude e é reaproveitada na legenda.
+O score é a média ponderada dos sinais disponíveis (`detect.weights`: chat 0,6, áudio 0,4). Janela acima de `trigger_zscore` vira pico, com distância mínima entre picos (`min_gap_seconds`) e teto por hora (`max_clips_per_hour`), por canal. Depois: clipes criados pelos viewers (API da Twitch) como terceiro sinal.
 
 ### Claude, só nos picos
 
-Para cada candidato, o Claude recebe ~2 min de transcrição em volta do pico, com a marcação de onde o chat explodiu, e devolve uma saída estruturada:
+Para cada pico, o juiz transcreve só o trecho em volta (`context_before_seconds` + `context_after_seconds`, padrão 90 + 30 s) com o Whisper, que fica carregado na memória, e manda ao Claude a transcrição com tempo e uma amostra do chat perto do pico. A resposta é estruturada (`--json-schema`):
 
-- `is_clip`, `score` (0–10) e o motivo
-- `start`/`end` ajustados para começar e terminar em frases completas, entre `clip.min_seconds` e `clip.max_seconds`
+- `is_clip`, `score` (0 a 10) e o motivo; abaixo de `min_judge_score` (padrão 7), o pico é descartado
+- `start`/`end` em frases completas, entre `clip.min_seconds` e `clip.max_seconds`
 - `title`, `description` e `hashtags` em pt-BR
 
-Modelo em `llm.model` (padrão `claude-opus-5-5`), via SDK oficial `anthropic`. Os critérios do que é um bom corte ficam num prompt de sistema estável; cada chamada muda só a transcrição. Para VODs, dá para mandar tudo pela Batch API (metade do preço, sem pressa).
+O Claude roda pela **assinatura**, via CLI do Claude Code (`claude -p`), com o modelo de `llm.model` (padrão `claude-opus-5-5`, esforço `medium`). A chamada é enxuta, para gastar pouco da cota: prompt de sistema próprio, sem ferramentas (`--tools ""`), sem MCP e sem salvar sessão. O ambiente do subprocesso vai sem `ANTHROPIC_API_KEY`, porque com ela o `claude -p` cobraria pela API. O login vem de `CLAUDE_CODE_OAUTH_TOKEN` (gerado com `claude setup-token`) ou do login do Claude Code. As mensagens do chat entram no prompt como dados, e o prompt manda ignorar pedidos escritos nelas.
 
-Por que não mandar a live inteira para o LLM: custo e latência. Os sinais baratos descartam a maior parte do tempo e o Claude julga só o que já parece interessante. Estimativa grosseira: poucos dólares por live de 4 h com os parâmetros padrão.
+Por que transcrever só em volta dos picos: a live inteira ocuparia ~25% desta CPU por canal; só os trechos dos picos, uns 10% (ver "Esta máquina").
 
 ## 3. Render — `render/`
 
 Uma única passada de `ffmpeg` por short: corta → reenquadra → legenda → normaliza o áudio → codifica.
 
-**Corte.** Hoje (fase 1) é `-ss`/`-t` direto no arquivo de entrada. Na live (fase 3) o trecho pode atravessar segmentos: monta-se uma lista `concat` com os segmentos envolvidos e aplica-se `-ss`/`-t` relativos ao primeiro. Como o vídeo é reencodado de qualquer jeito, o corte sai exato no frame.
+**Corte.** No `autocortes render`, é `-ss`/`-t` direto no arquivo. No modo live, os segmentos que cobrem o trecho são emendados num `.ts` temporário e cortados com `-ss`/`-t` relativos ao primeiro segmento. Como o vídeo é reencodado de qualquer jeito, o corte sai exato no quadro.
 
 **Pasta de trabalho.** O ffmpeg roda com uma pasta temporária como diretório atual, e a legenda (`captions.ass`), as fontes (`fonts/`) e o roteiro do recorte (`face.cmd`) entram por caminho relativo. Caminho do Windows (`C:\...`) dentro de um filtergraph exige escapes frágeis.
 
-**Layouts 9:16 (1080×1920)** — `render.layout`:
+**Layouts 9:16 (1080×1920)**, em `render.layout`:
 
 | Layout | Ideal para | Como |
 |---|---|---|
@@ -73,17 +87,17 @@ Uma única passada de `ffmpeg` por short: corta → reenquadra → legenda → n
 5. Salto maior que 25% da largura do quadro, se continuar na amostra seguinte (troca de plano ou de pessoa), vira corte seco.
 6. A posição de cada quadro vai para um roteiro do filtro `sendcmd`, que move o `crop@face` durante o encode.
 
-Filtro do `blur`:
+Filtro do `blur` (o fundo é desfocado em 1/4 da resolução, que é bem mais rápido):
 
 ```
-[0:v]split[a][b];
-[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20[bg];
-[b]scale=1080:-2[fg];
-[bg][fg]overlay=(W-w)/2:(H-h)/2
+[src]split=2[bgsrc][fgsrc];
+[bgsrc]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,boxblur=10:2,scale=1080:1920[bg];
+[fgsrc]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2[fg];
+[bg][fg]overlay=(W-w)/2:(H-h)/2[framed]
 ```
 
 **Legendas** (`render/captions.py`).
-- `faster-whisper` com `word_timestamps=True` e filtro de voz (VAD), no modelo `captions.whisper_model`, idioma `pt`. Com `captions.device: auto` tenta a GPU e, se faltarem as DLLs do CUDA, cai para a CPU e avisa.
+- `faster-whisper` com `word_timestamps=True` e filtro de voz (VAD), no modelo `captions.whisper_model`, idioma `pt`. Com `captions.device: auto` tenta a GPU e, se faltarem as DLLs do CUDA, cai para a CPU e avisa. No modo live, a transcrição feita pelo juiz é reaproveitada na legenda.
 - Arquivo `.ass` estilo shorts: blocos de até `words_per_line` palavras (pausa > 0,6 s ou fim de frase começam outro bloco), em maiúsculas, fonte grossa com contorno, a palavra falada em destaque (`highlight_color`) com um "pop" de 112%.
 - Posição: `margin_bottom` px acima da borda, fora da área coberta pela interface do TikTok/Reels (legenda do post, botões).
 - Queimada com o filtro `ass`; a fonte (Montserrat ExtraBold, licença OFL) vem dentro do pacote, em `src/autocortes/assets/fonts`, e é copiada para a pasta de trabalho.
@@ -92,7 +106,7 @@ Filtro do `blur`:
 
 ## 4. Revisão
 
-Cada short renderizado entra numa fila. Na CLI: listar, assistir, aprovar, editar o texto, descartar; na fase 5 vira um painel web. Com `publish.manual_review: false`, o que o detector aprova é publicado direto.
+Hoje a fila é a pasta `data/fila/`: você assiste ao `.mp4`, copia o texto do `.txt` e posta. `autocortes queue` lista o que está pronto, com nota e título. Depois vira um painel web (fase 5) e, com `publish.manual_review: false`, o que o juiz aprova é publicado direto.
 
 ## 5. Publicação — `publish/`
 
@@ -102,23 +116,15 @@ Cada plataforma tem teto diário (o TikTok, em geral ~15 posts por conta), menor
 
 ## Estado
 
-SQLite em `data/autocortes.db`:
-
-```
-streams   id, url, platform, started_at_utc, status
-segments  stream_id, idx, path, t_start, t_end
-moments   id, stream_id, t_start, t_end, score, signals, reason, status
-shorts    id, moment_id, path, layout, title, description, hashtags, status
-posts     short_id, platform, status, post_id, url, error, published_at
-```
-
-Ciclo de vida: `detected → rendered → approved → published` (ou `rejected` / `failed`). Cada etapa só consome o que a anterior deixou com o status certo, então o processo pode parar e retomar sem perder nada.
+Por enquanto, arquivos: `data/live/<canal>/<sessão>/` (segmentos, `segments.csv`, `gravacao.log`) e `data/fila/` (shorts, `.txt`, `.json`, `juiz.jsonl`). Um banco SQLite entra quando a publicação automática e o painel precisarem guardar status de post.
 
 ## Esta máquina
 
-Medido na fase 1 (i5-11400, 16 GB, GTX 1650 4 GB, driver NVIDIA 581.80):
+Medido em 11/11/2026 (i5-11400, 16 GB, GTX 1650 4 GB, driver NVIDIA 581.80):
 
-- **Short de 18 s em 22 s**, contando carregar o Whisper, transcrever na CPU (`large-v3-turbo` em int8) e renderizar com `libx264`.
-- **Whisper na GPU**: precisa das DLLs cuBLAS 12 e cuDNN 9 do CUDA, que não estão instaladas. Com `captions.device: auto` ele tenta a GPU e cai para a CPU sozinho. Vale instalar quando a transcrição contínua da live (fase 3) pedir velocidade.
-- **NVENC (render na GPU)**: o ffmpeg 9.0.2 exige driver NVIDIA 610+. Com o driver atual o render fica no `libx264`, que dá conta; atualizar o driver libera o NVENC sem mudar o código.
-- **Ainda não instalados**: streamlink e yt-dlp (extra `ingest`, fase 2). O `autocortes doctor` mostra o que falta.
+- **Whisper** `large-v3-turbo` na CPU (int8): 4× o tempo real, depois de 4 s para carregar o modelo.
+- **Render** com `libx264`: um short de 18 s em ~5 s.
+- **Várias lives**: transcrevendo só em volta dos picos, cada live ocupa ~10% da CPU, então 3 lives simultâneas ficam em ~30–40%. Para mais lives, ou para transcrever lives inteiras:
+  - **Whisper na GPU**: precisa das DLLs cuBLAS 12 e cuDNN 9 do CUDA, que não estão instaladas. Com `captions.device: auto` ele tenta a GPU e cai para a CPU sozinho.
+  - **NVENC (render na GPU)**: o ffmpeg 9.0.2 exige driver NVIDIA 610+. Com o driver atual, o render fica no `libx264`.
+- **Disco**: só ~36 GB livres no C:, e três lives em 1080p gravam ~10 GB por hora. Por isso a retenção padrão é de 2 h.

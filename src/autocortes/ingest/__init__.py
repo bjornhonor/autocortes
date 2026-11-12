@@ -1,7 +1,6 @@
-"""Captura de vídeo e chat (VOD na fase 2, live na fase 3).
+"""Captura da live: vídeo em segmentos e chat com horário.
 
-Planejado:
-- vod.py       baixa VOD e chat gravado (yt-dlp, chat-downloader) para desenvolver sem live.
-- recorder.py  streamlink -> ffmpeg em segmentos .ts + segments.csv com os tempos.
-- chat.py      chat ao vivo com horário: IRC anônimo da Twitch, chat-downloader no YouTube.
+- recorder.py  streamlink -> ffmpeg em segmentos .ts curtos (+ segments.csv), sem reencode.
+- segments.py  lê a lista de segmentos, acha os que cobrem um trecho e os emenda.
+- chat.py      chat da Twitch por IRC anônimo. YouTube e Kick ficam para depois.
 """

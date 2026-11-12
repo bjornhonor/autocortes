@@ -60,6 +60,7 @@ def render_short(
     layout: str | None = None,
     facecam: reframe.FacecamBox | None = None,
     with_captions: bool = True,
+    transcript: captions.Transcript | None = None,  # já transcrito (modo live): usa e pronto
     on_step: Callable[[str], None] = lambda _: None,
 ) -> RenderResult:
     """Corta [start, end] de `video`, leva para 9:16, legenda e grava `out` (.mp4)."""
@@ -82,17 +83,17 @@ def render_short(
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="autocortes-") as tmp:
         work = Path(tmp)
-        transcript = None
-        if with_captions and info.has_audio:
-            on_step("Transcrevendo o áudio")
-            transcript = _transcribe(clip, work, cfg)
-            if transcript.gpu_error:
-                notes.append(f"Whisper rodou na CPU; a GPU falhou: {transcript.gpu_error}")
-            if not transcript.words:
-                notes.append("Nenhuma fala reconhecida: short sem legenda.")
-        elif with_captions:
-            notes.append("O vídeo não tem áudio: short sem legenda.")
-        subtitled = transcript is not None and bool(transcript.words)
+        if transcript is None and with_captions:
+            if info.has_audio:
+                on_step("Transcrevendo o áudio")
+                transcript = _transcribe(clip, work, cfg)
+                if transcript.gpu_error:
+                    notes.append(f"Whisper rodou na CPU; a GPU falhou: {transcript.gpu_error}")
+                if not transcript.words:
+                    notes.append("Nenhuma fala reconhecida: short sem legenda.")
+            else:
+                notes.append("O vídeo não tem áudio: short sem legenda.")
+        subtitled = with_captions and transcript is not None and bool(transcript.words)
         if subtitled:
             ass = captions.build_ass(
                 transcript.words, cfg.captions, cfg.render.width, cfg.render.height

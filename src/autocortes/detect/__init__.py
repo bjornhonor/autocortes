@@ -1,8 +1,7 @@
-"""Detecção de momentos-chave (fase 2).
+"""Detecção de momentos-chave.
 
-Planejado:
-- signals.py     séries por janela: velocidade do chat, emotes/palavras, volume do áudio.
-- transcribe.py  transcrição contínua dos segmentos com faster-whisper.
-- scorer.py      z-score contra a média móvel, soma ponderada, picos viram Moment.
-- judge.py       Claude decide se o candidato vale, ajusta início/fim e escreve o post.
+- signals.py  séries por janela: peso das mensagens do chat e volume do áudio, z-score robusto.
+- scorer.py   soma ponderada dos sinais; picos acima do limite viram Peak (com intervalo e teto).
+- judge.py    o Claude, via `claude -p` na assinatura, decide se vale, acerta início/fim e
+              escreve título, descrição e hashtags.
 """
