@@ -121,18 +121,49 @@ def package_checks() -> list[Check]:
     return checks
 
 
+MIN_CLAUDE_CODE = (2, 1, 280)  # versão da CLI que o Opus 5.5 (modelo padrão do juiz) exige
+
+
+def claude_version(claude: str) -> tuple[int, int, int] | None:
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", _run(claude, "--version"))
+    return (int(match[1]), int(match[2]), int(match[3])) if match else None
+
+
+def _claude_check(group: str) -> Check:
+    claude = shutil.which("claude")
+    if claude is None:
+        return Check(group, "CLI claude (juiz)", False, "instale o Claude Code")
+    version = claude_version(claude)
+    if version is None:
+        return Check(group, "CLI claude (juiz)", False, "não deu para ler `claude --version`")
+    text = ".".join(map(str, version))
+    if version < MIN_CLAUDE_CODE:
+        hint = f"{text}: o Opus 5.5 pede 2.1.280+ (`claude update`)"
+        return Check(group, "CLI claude (juiz)", False, hint)
+    return Check(group, "CLI claude (juiz)", True, text)
+
+
 def credential_checks() -> list[Check]:
     s = Secrets()
     group = "Credenciais (.env)"
     youtube = s.youtube_client_secrets
-    claude = shutil.which("claude")
+    token = s.claude_code_oauth_token or ""
+    compact = "".join(token.split())
+    if not compact:
+        token_detail = "rode `claude setup-token`"
+    elif not compact.startswith("sk-ant-oat"):
+        token_detail = "não parece um token do `claude setup-token`"
+    elif compact != token:
+        token_detail = "ok (o espaço que veio na cópia é ignorado)"
+    else:
+        token_detail = "assinatura ok"
     return [
-        Check(group, "CLI claude (juiz)", claude is not None, claude or "instale o Claude Code"),
+        _claude_check(group),
         Check(
             group,
             "CLAUDE_CODE_OAUTH_TOKEN",
-            bool(s.claude_code_oauth_token),
-            "assinatura ok" if s.claude_code_oauth_token else "rode `claude setup-token`",
+            compact.startswith("sk-ant-oat"),
+            token_detail,
         ),
         Check(group, "YOUTUBE_CLIENT_SECRETS", youtube.is_file(), f"publicação - {youtube}"),
         Check(

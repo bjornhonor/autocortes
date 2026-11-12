@@ -145,6 +145,25 @@ def test_recorder_and_chat_stop_and_join(tmp_path, monkeypatch):
         assert not thread.is_alive()
 
 
+def test_chat_reports_connection_once(monkeypatch):
+    statuses = []
+
+    def fake_listen(self):
+        self._mark_connected()
+        self._mark_connected()  # segunda vez não repete o aviso
+        self._halt.wait()
+
+    monkeypatch.setattr(TwitchChat, "_listen", fake_listen)
+    chat = TwitchChat("canal", on_message=lambda *_: None, on_status=statuses.append)
+    chat.start()
+    deadline = time.monotonic() + 5
+    while not statuses and time.monotonic() < deadline:
+        time.sleep(0.01)
+    chat.stop()
+    chat.join(timeout=5)
+    assert statuses == ["chat conectado"] and chat.connected
+
+
 def test_remove_old_sessions_keeps_recent_and_current(tmp_path):
     old, recent, current = (tmp_path / name for name in ("antiga", "recente", "atual"))
     for folder in (old, recent, current):
@@ -226,6 +245,11 @@ def test_subscription_env_drops_api_keys(monkeypatch):
     assert judge.subscription_env()["CLAUDE_CODE_OAUTH_TOKEN"] == "tok"
 
 
+def test_subscription_env_removes_spaces_from_a_pasted_token(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-abc def\n")
+    assert judge.subscription_env()["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-abcdef"
+
+
 def test_ask_claude_makes_a_lean_call(monkeypatch):
     calls = {}
 
@@ -246,9 +270,10 @@ def test_ask_claude_makes_a_lean_call(monkeypatch):
 
 
 def test_build_prompt_has_transcript_and_chat():
-    lines, chat = [(1826.6, " CONSEGUI ")], [(1831.0, "fulano", "KEKW")]
+    lines, chat = [(1826.6, 1829.9, " CONSEGUI ")], [(1831.0, "fulano", "KEKW")]
     prompt = judge.build_prompt("gaules", 1832.0, 4.1, lines, chat)
-    assert "t=1832" in prompt and "[1826.6] CONSEGUI" in prompt and "[1831] fulano: KEKW" in prompt
+    assert "t=1832" in prompt and "[1826.6-1829.9] CONSEGUI" in prompt
+    assert "[1831] fulano: KEKW" in prompt
 
 
 def test_names_and_clock():

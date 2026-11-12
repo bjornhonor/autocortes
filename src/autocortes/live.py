@@ -57,6 +57,11 @@ def clock(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{secs:02d}" if hours else f"{minutes}:{secs:02d}"
 
 
+def _z(value: float | None) -> str:
+    """z-score para o log: '-' quando o sinal não existe (ex.: canal sem chat)."""
+    return "-" if value is None else f"{value:.1f}"
+
+
 def slugify(text: str, size: int = 40) -> str:
     plain = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
     return re.sub(r"[^a-z0-9]+", "-", plain.lower()).strip("-")[:size].strip("-") or "corte"
@@ -113,7 +118,9 @@ class Channel:
             on_status=lambda text: log(self.name, text, ""),
         )
         twitch = twitch_channel(url)
-        self.chat = TwitchChat(twitch, self._on_chat) if twitch else None
+        self.chat = None
+        if twitch:
+            self.chat = TwitchChat(twitch, self._on_chat, lambda text: log(self.name, text, ""))
 
     def _reset(self) -> None:
         detect = self.cfg.detect
@@ -182,7 +189,8 @@ class Channel:
                 if peak:
                     self.pending.append(peak)
                     self.peaks_total += 1
-                    message = f"pico em {clock(peak.t)} (intensidade {peak.score:.1f})"
+                    signals = f"chat {_z(peak.z_chat)}, áudio {_z(peak.z_audio)}"
+                    message = f"pico em {clock(peak.t)} (intensidade {peak.score:.1f}: {signals})"
                     self.log(self.name, message, "cyan")
                 self.next_window += 1
             self.windows.forget_before(self.next_window)
@@ -292,7 +300,10 @@ class JudgeWorker(threading.Thread):
         ]
         if not self.use_claude or time.monotonic() < self._claude_paused_until:
             return Approved(candidate, fallback_verdict(candidate, clip), words, judged=False)
-        lines = [(audio_start + start, text) for start, _end, text in transcript.sentences]
+        lines = [
+            (audio_start + start, audio_start + end, text)
+            for start, end, text in transcript.sentences
+        ]
         prompt = judge.build_prompt(name, peak.t, peak.score, lines, candidate.chat)
         try:
             verdict, usage = judge.ask_claude(prompt, self.cfg.llm, clip)

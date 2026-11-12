@@ -59,7 +59,9 @@ copy .env.example .env
 .venv\Scripts\autocortes doctor
 ```
 
-Para o juiz usar a sua assinatura do Claude, rode `claude setup-token` num terminal, autorize com a conta que vai usar e cole o token no `.env` como `CLAUDE_CODE_OAUTH_TOKEN`. Com o venv ativado (`.venv\Scripts\Activate.ps1`), basta chamar `autocortes`.
+Para o juiz usar a sua assinatura do Claude, rode `claude setup-token` num terminal, autorize com a conta que vai usar e cole o token no `.env` como `CLAUDE_CODE_OAUTH_TOKEN`. Se a cópia do terminal quebrar a linha e enfiar um espaço no token, tudo bem: o espaço é ignorado. O juiz com o Opus 5.5 exige o Claude Code 2.1.280 ou mais novo (`claude update`).
+
+Rode os comandos sempre de dentro da pasta do projeto: os caminhos `.venv\...`, o `config.yaml` e o `.env` são procurados a partir da pasta atual. Com o venv ativado (`.venv\Scripts\Activate.ps1`), basta chamar `autocortes`.
 
 ## Uso
 

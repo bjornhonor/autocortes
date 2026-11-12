@@ -42,6 +42,16 @@ FFMPEG_ENCODERS = """\
 """
 
 
+def test_claude_version_parsing(monkeypatch):
+    from autocortes import doctor
+
+    monkeypatch.setattr(doctor, "_run", lambda *_cmd: "2.1.322 (Claude Code)\n")
+    assert doctor.claude_version("claude") == (2, 1, 322)
+    assert doctor.claude_version("claude") >= doctor.MIN_CLAUDE_CODE
+    monkeypatch.setattr(doctor, "_run", lambda *_cmd: "")
+    assert doctor.claude_version("claude") is None
+
+
 def test_listed_parses_ffmpeg_output():
     assert _listed(FFMPEG_FILTERS, "ass")
     assert not _listed(FFMPEG_FILTERS, "drawtext")

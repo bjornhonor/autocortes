@@ -13,7 +13,8 @@ Meta atual: lançamento do GTA 6 em 19/11/2026, com várias lives ao mesmo tempo
 - Plataforma principal é Windows: cuidado com caminhos dentro do filtro `ass` do ffmpeg. A CLI força UTF-8 em stdout/stderr (`cli.run`) para os acentos não quebrarem fora do console.
 - O render roda o ffmpeg com cwd numa pasta temporária; legenda, fontes e `face.cmd` entram por caminho relativo (ver "Pasta de trabalho" em docs/ARQUITETURA.md). Use `ffmpeg.find_tool`/`run_ffmpeg`, não `"ffmpeg"` direto: logo após instalar pelo winget o PATH dos processos abertos ainda é o velho.
 - Bibliotecas pesadas (faster-whisper, OpenCV) são importadas dentro das funções, para a CLI e os testes rodarem sem elas.
-- O juiz chama o Claude pela CLI do Claude Code (`claude -p`, em `detect/judge.py`) na assinatura pessoal do usuário, não pelo SDK. O subprocesso roda sem `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`: com elas, o `claude -p` cobraria pela API.
+- O juiz chama o Claude pela CLI do Claude Code (`claude -p`, em `detect/judge.py`) na assinatura pessoal do usuário (conta Pro), não pelo SDK. O subprocesso roda sem `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`: com elas, o `claude -p` cobraria pela API. O Opus 5.5 exige a CLI 2.1.280+ (`claude update`).
+- Nunca leia o terminal do usuário por inteiro se ele pode ter rodado `claude setup-token`: o token fica impresso na tela.
 - Desenvolver e testar cada etapa em VODs antes de ligar na live.
 
 ## Comandos

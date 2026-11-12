@@ -58,7 +58,7 @@ Para cada pico, o juiz transcreve só o trecho em volta (`context_before_seconds
 - `start`/`end` em frases completas, entre `clip.min_seconds` e `clip.max_seconds`
 - `title`, `description` e `hashtags` em pt-BR
 
-O Claude roda pela **assinatura**, via CLI do Claude Code (`claude -p`), com o modelo de `llm.model` (padrão `claude-opus-5-5`, esforço `medium`). A chamada é enxuta, para gastar pouco da cota: prompt de sistema próprio, sem ferramentas (`--tools ""`), sem MCP e sem salvar sessão. O ambiente do subprocesso vai sem `ANTHROPIC_API_KEY`, porque com ela o `claude -p` cobraria pela API. O login vem de `CLAUDE_CODE_OAUTH_TOKEN` (gerado com `claude setup-token`) ou do login do Claude Code. As mensagens do chat entram no prompt como dados, e o prompt manda ignorar pedidos escritos nelas.
+O Claude roda pela **assinatura**, via CLI do Claude Code (`claude -p`, versão 2.1.280 ou mais nova para o Opus 5.5), com o modelo de `llm.model` (padrão `claude-opus-5-5`, esforço `medium`). Medido em 11/11/2026: ~2,8 mil tokens de entrada e ~0,9 mil de saída por chamada, US$ 0,04 em preço de API, ~10 s de resposta. A chamada é enxuta, para gastar pouco da cota: prompt de sistema próprio, sem ferramentas (`--tools ""`), sem MCP e sem salvar sessão. O ambiente do subprocesso vai sem `ANTHROPIC_API_KEY`, porque com ela o `claude -p` cobraria pela API. O login vem de `CLAUDE_CODE_OAUTH_TOKEN` (gerado com `claude setup-token`; espaços colados junto são removidos) ou do login do Claude Code. As mensagens do chat entram no prompt como dados, e o prompt manda ignorar pedidos escritos nelas.
 
 Por que transcrever só em volta dos picos: a live inteira ocuparia ~25% desta CPU por canal; só os trechos dos picos, uns 10% (ver "Esta máquina").
 

@@ -88,7 +88,8 @@ class Recorder(threading.Thread):
                     sink.kill()
                 source.wait()
         if started:
-            self.on_status("a gravação parou (live caiu ou acabou)")
+            if not self._halt.is_set():  # parada pedida (Ctrl+C, --minutes) não é queda
+                self.on_status("a gravação parou (live caiu ou acabou)")
         else:  # nada gravado: conta o porquê e não deixa pasta vazia para trás
             lines = log_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
             if lines and not self._halt.is_set():

@@ -31,9 +31,14 @@ def parse_line(line: str) -> tuple[str, str] | None:
 class TwitchChat(threading.Thread):
     """Lê o chat de um canal e chama on_message(horário, autor, texto) a cada mensagem."""
 
-    def __init__(self, channel: str, on_message: Callable[[float, str, str], None]):
+    def __init__(
+        self,
+        channel: str,
+        on_message: Callable[[float, str, str], None],
+        on_status: Callable[[str], None] = lambda _: None,
+    ):
         super().__init__(name=f"chat-{channel}", daemon=True)
-        self.channel, self.on_message = channel, on_message
+        self.channel, self.on_message, self.on_status = channel, on_message, on_status
         self.connected = False
         self._halt = threading.Event()
 
@@ -47,9 +52,16 @@ class TwitchChat(threading.Thread):
                 self._listen()
                 backoff = 2.0
             except OSError:
+                if self.connected:
+                    self.on_status("chat caiu; reconectando")
                 self.connected = False
                 self._halt.wait(backoff)
                 backoff = min(backoff * 2, 60.0)
+
+    def _mark_connected(self) -> None:
+        if not self.connected:
+            self.connected = True
+            self.on_status("chat conectado")
 
     def _listen(self) -> None:
         with socket.create_connection((HOST, PORT), timeout=10) as sock:
@@ -73,7 +85,7 @@ class TwitchChat(threading.Thread):
                     if line.startswith("PING"):
                         sock.sendall(line.replace("PING", "PONG", 1).encode() + b"\r\n")
                     elif " 366 " in line:  # fim da lista de nomes: entrou no canal
-                        self.connected = True
+                        self._mark_connected()
                     elif message := parse_line(line):
-                        self.connected = True
+                        self._mark_connected()
                         self.on_message(now, *message)
