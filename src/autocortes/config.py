@@ -25,8 +25,9 @@ class CaptureConfig(_Section):
 
 
 class DetectWeights(_Section):
-    chat: float = Field(0.6, ge=0)
-    audio: float = Field(0.4, ge=0)
+    chat: float = Field(0.3, ge=0)  # volume de mensagens
+    chorus: float = Field(0.4, ge=0)  # muita gente diferente dizendo a mesma coisa
+    audio: float = Field(0.3, ge=0)
 
 
 class DetectConfig(_Section):
@@ -40,6 +41,9 @@ class DetectConfig(_Section):
     context_before_seconds: int = Field(90, gt=0)
     context_after_seconds: int = Field(30, gt=0)
     min_judge_score: int = Field(7, ge=0, le=10)
+    twitch_clips: bool = True  # clipes dos viewers como pico (precisa de TWITCH_CLIENT_ID/SECRET)
+    clips_poll_seconds: int = Field(60, ge=15)
+    clips_min_count: int = Field(1, ge=1)  # clipes do mesmo momento para virar pico
 
 
 class ClipConfig(_Section):

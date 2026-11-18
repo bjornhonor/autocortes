@@ -15,13 +15,17 @@ detect:
   trigger_zscore: 3.0        # quantos desvios acima do normal disparam um candidato
   reaction_delay_seconds: 8  # o chat reage depois do momento; recua esse tanto
   weights:
-    chat: 0.6
-    audio: 0.4
+    chat: 0.3                # volume de mensagens
+    chorus: 0.4              # muita gente diferente dizendo a mesma coisa ("KKKK", "CLIPA", "NAO")
+    audio: 0.3
   min_gap_seconds: 90        # distância mínima entre dois cortes do mesmo canal
   max_clips_per_hour: 6      # por canal
   context_before_seconds: 90 # quanto da live o juiz lê antes do pico
   context_after_seconds: 30  # e depois
   min_judge_score: 8         # nota mínima (0 a 10) do juiz para virar short: só os melhores
+  twitch_clips: true         # clipes que os viewers criam viram pico (TWITCH_CLIENT_ID/SECRET no .env)
+  clips_poll_seconds: 60     # de quanto em quanto tempo consulta os clipes novos
+  clips_min_count: 1         # clipes do mesmo momento para virar pico (canal grande: 2)
 
 clip:
   min_seconds: 15

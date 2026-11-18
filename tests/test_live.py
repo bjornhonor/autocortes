@@ -314,3 +314,43 @@ def test_names_and_clock():
     assert clock(75) == "1:15" and clock(3723) == "1:02:03"
     assert slugify("Caiu 4 vezes no MESMO buraco!") == "caiu-4-vezes-no-mesmo-buraco"
     assert slugify("Ação é ótima") == "acao-e-otima"
+
+
+def test_short_dir_groups_by_day_and_channel(tmp_path):
+    from autocortes.live import short_dir
+
+    when = time.strptime("2026-11-19 21:40", "%Y-%m-%d %H:%M")
+    first = short_dir(tmp_path, when, "felps", 8, True, "Ele VOOU de moto até o telhado!")
+    assert first == tmp_path / "2026-11-19" / "felps" / "21h40_n8_ele-voou-de-moto-ate-o-telhado"
+    first.mkdir(parents=True)
+    again = short_dir(tmp_path, when, "felps", 8, True, "Ele VOOU de moto até o telhado!")
+    assert again.name == "21h40_n8_ele-voou-de-moto-ate-o-telhado-2"
+    assert short_dir(tmp_path, when, "felps", 3, False, "x").name == "21h40_n3_sem-juiz_x"
+
+
+def test_sidecars_and_queue_listing(tmp_path):
+    from types import SimpleNamespace
+
+    from typer.testing import CliRunner
+
+    from autocortes.cli import app
+    from autocortes.detect.scorer import Peak
+    from autocortes.live import Approved, Candidate, write_sidecars
+
+    folder = tmp_path / "fila" / "2026-11-19" / "felps" / "21h40_n8_ele-voou"
+    folder.mkdir(parents=True)
+    video = folder / "ele-voou.mp4"
+    video.write_bytes(b"")
+    verdict = judge.Verdict(True, 8, 1.0, 30.0, "bom", "Ele voou", "desc", ["gta", "felps"])
+    channel = SimpleNamespace(name="felps", url="twitch.tv/felps")
+    peak = Peak(10.0, 10.0, None, None, chorus="kkk (9 pessoas)", clips=("VOOU",))
+    write_sidecars(video, Approved(Candidate(channel, None, peak, []), verdict, [], True))
+    info = json.loads((folder / "info.json").read_text(encoding="utf-8"))
+    assert info["video"] == "ele-voou.mp4" and info["viewer_clips"] == ["VOOU"]
+    assert (folder / "post.txt").read_text(encoding="utf-8") == "Ele voou\n\ndesc\n\n#gta #felps\n"
+
+    config = tmp_path / "c.yaml"
+    config.write_text(f"data_dir: {tmp_path.as_posix()}\n", encoding="utf-8")
+    result = CliRunner().invoke(app, ["-c", str(config), "queue"])
+    assert result.exit_code == 0, result.output
+    assert "Ele voou" in result.output and "21h40_n8_ele-voou" in result.output

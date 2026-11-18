@@ -22,24 +22,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from autocortes.config import ClipConfig, Config
+from autocortes.config import ClipConfig, Config, Secrets
 from autocortes.detect import judge
 from autocortes.detect.scorer import Peak, PeakDetector
 from autocortes.detect.signals import ChatWindows, audio_levels
 from autocortes.ffmpeg import FFmpegError, run_ffmpeg
 from autocortes.ingest import segments as seg
 from autocortes.ingest.chat import TwitchChat, twitch_channel
+from autocortes.ingest.clips import Clip, ClipWatcher, TwitchApp
 from autocortes.ingest.recorder import Recorder
 from autocortes.render import captions
 from autocortes.render.pipeline import render_short
 
 Log = Callable[[str, str, str], None]  # (canal, mensagem, estilo do rich)
-QUEUE_DIR = "fila"
+QUEUE_DIR = "fila"  # data/fila/<dia>/<canal>/<hora>_n<nota>_<título>/
+INFO_FILE, POST_FILE, JUDGE_LOG = "info.json", "post.txt", "juiz.jsonl"
 URL_NOISE = {"live", "watch", "c", "channel", "user", "videos"}
 CHAT_BEFORE, CHAT_AFTER, CHAT_SAMPLE = 15.0, 30.0, 40  # chat mandado ao juiz em volta do pico
 CLAUDE_PAUSE = 300  # s sem tentar o Claude depois de uma falha (sem login, limite...)
 FRAME_SPAN = (-10.0, 6.0)  # quadros para o juiz: de 10 s antes a 6 s depois do pico
 REPORT_EVERY = 300  # s entre resumos no terminal
+CLIP_MERGE = 45.0  # s: clipes e picos mais perto que isso são o mesmo momento
+CLIP_SCORE = 10.0  # intensidade de um pico vindo de clipe: passa na frente dos sinais na fila
 
 
 def channel_slug(url: str) -> str:
@@ -76,6 +80,32 @@ def frame_times(peak_t: float, count: int, lo: float, hi: float) -> list[float]:
         return [round(min(max(peak_t, lo), hi - 0.5), 2)]
     step = (last - first) / (count - 1)
     return [round(first + i * step, 2) for i in range(count)]
+
+
+def merge_peaks(a: Peak, b: Peak) -> Peak:
+    """Dois sinais do mesmo momento viram um pico só, com o que cada um sabe.
+
+    O instante vem do clipe, quando há: quem clipou viu o lance; o chat só reage depois.
+    """
+    first, second = (b, a) if b.clips and not a.clips else (a, b)
+
+    def pick(x, y):
+        return x if x is not None else y
+
+    return Peak(
+        t=first.t,
+        score=max(a.score, b.score),
+        z_chat=pick(a.z_chat, b.z_chat),
+        z_audio=pick(a.z_audio, b.z_audio),
+        z_chorus=pick(a.z_chorus, b.z_chorus),
+        chorus=a.chorus or b.chorus,
+        clips=tuple(dict.fromkeys(first.clips + second.clips)),
+    )
+
+
+def clip_moment(clip: Clip, t0: float, reaction_delay: float) -> float:
+    """Instante do lance na gravação: o viewer clica no clipe logo depois de ver o lance."""
+    return clip.created - t0 - reaction_delay
 
 
 def slugify(text: str, size: int = 40) -> str:
@@ -117,12 +147,12 @@ def fallback_verdict(candidate: Candidate, clip: ClipConfig) -> judge.Verdict:
 class Channel:
     """Um canal acompanhado: gravação, chat e detecção de picos."""
 
-    def __init__(self, url: str, cfg: Config, log: Log):
+    def __init__(self, url: str, cfg: Config, log: Log, twitch_app: TwitchApp | None = None):
         self.url, self.cfg, self.log = url, cfg, log
         self.name = channel_slug(url)
         self.session: seg.Session | None = None
         self.messages: deque[tuple[float, str, str]] = deque(maxlen=20_000)
-        self.chat_total = self.peaks_total = 0
+        self.chat_total = self.peaks_total = self.clips_total = 0
         self._lock = threading.Lock()
         self._reset()
         self.recorder = Recorder(
@@ -135,8 +165,18 @@ class Channel:
         )
         twitch = twitch_channel(url)
         self.chat = None
+        self.clips = None
         if twitch:
             self.chat = TwitchChat(twitch, self._on_chat, lambda text: log(self.name, text, ""))
+            if twitch_app is not None:
+                self.clips = ClipWatcher(
+                    twitch_app,
+                    twitch,
+                    since=lambda: self.session.t0 if self.session else None,
+                    on_clips=self._on_clips,
+                    on_status=lambda text: log(self.name, text, ""),
+                    every=cfg.detect.clips_poll_seconds,
+                )
 
     def _reset(self) -> None:
         detect = self.cfg.detect
@@ -146,6 +186,8 @@ class Channel:
         self.next_window = 0
         self.seen = 0  # segmentos já medidos
         self.pending: list[Peak] = []
+        self.sent: deque[float] = deque(maxlen=500)  # instantes já mandados ao juiz
+        self.clip_groups: list[tuple[float, list[str]]] = []  # (instante, títulos)
         self.messages.clear()
 
     def start(self) -> None:
@@ -154,11 +196,55 @@ class Channel:
             self.chat.start()
         else:
             self.log(self.name, "sem chat (por enquanto só Twitch): picos só pelo áudio", "yellow")
+        if self.clips:
+            self.clips.start()
 
     def stop(self) -> None:
         self.recorder.stop()
         if self.chat:
             self.chat.stop()
+        if self.clips:
+            self.clips.stop()
+
+    def _add_peak(self, peak: Peak) -> bool:
+        """Junta o pico a outro pendente do mesmo momento ou o põe na fila.
+
+        False quando o momento já foi mandado ao juiz (ou se juntou a um pendente).
+        """
+        for i, other in enumerate(self.pending):
+            if abs(other.t - peak.t) <= CLIP_MERGE:
+                self.pending[i] = merge_peaks(other, peak)
+                return False
+        if any(abs(t - peak.t) <= CLIP_MERGE for t in self.sent):
+            return False
+        self.pending.append(peak)
+        return True
+
+    def _on_clips(self, clips: list[Clip]) -> None:
+        detect = self.cfg.detect
+        with self._lock:
+            session = self.session
+            if session is None:
+                return
+            for clip in clips:
+                t = clip_moment(clip, session.t0, detect.reaction_delay_seconds)
+                if t < 0:
+                    continue  # de antes desta gravação
+                self.clips_total += 1
+                group = next((g for g in self.clip_groups if abs(g[0] - t) <= CLIP_MERGE), None)
+                if group is None:
+                    group = (t, [])
+                    self.clip_groups.append(group)
+                group[1].append(clip.title or "(sem título)")
+                titles = group[1]
+                self.log(self.name, f'clipe dos viewers em {clock(t)}: "{clip.title}"', "magenta")
+                if len(titles) < detect.clips_min_count:
+                    continue
+                score = CLIP_SCORE + len(titles) - 1
+                self._add_peak(Peak(group[0], score, None, None, clips=tuple(titles)))
+            if self.clip_groups:  # esquece momentos de mais de 1 h antes do clipe mais novo
+                newest = max(g[0] for g in self.clip_groups)
+                self.clip_groups = [g for g in self.clip_groups if newest - g[0] < 3600]
 
     def _on_session(self, session: seg.Session) -> None:
         with self._lock:
@@ -201,17 +287,24 @@ class Channel:
                     index,
                     self.windows.value(index) if chat_on else None,
                     total / count if count else None,
+                    self.windows.chorus(index) if chat_on else None,
                 )
-                if peak:
-                    self.pending.append(peak)
+                if peak and self._add_peak(peak):
                     self.peaks_total += 1
-                    signals = f"chat {_z(peak.z_chat)}, áudio {_z(peak.z_audio)}"
-                    message = f"pico em {clock(peak.t)} (intensidade {peak.score:.1f}: {signals})"
+                    signals = (
+                        f"chat {_z(peak.z_chat)}, coro {_z(peak.z_chorus)}, "
+                        f"áudio {_z(peak.z_audio)}"
+                    )
+                    said = f' — "{peak.chorus}"' if peak.chorus else ""
+                    message = (
+                        f"pico em {clock(peak.t)} (intensidade {peak.score:.1f}: {signals}){said}"
+                    )
                     self.log(self.name, message, "cyan")
                 self.next_window += 1
             self.windows.forget_before(self.next_window)
             ready = [p for p in self.pending if recorded >= p.t + detect.context_after_seconds]
             self.pending = [p for p in self.pending if p not in ready]
+            self.sent.extend(p.t for p in ready)
             seg.prune(segments, recorded - self.cfg.capture.retention_hours * 3600)
             return [Candidate(self, session, p, self._chat_near(p.t)) for p in ready]
 
@@ -241,7 +334,8 @@ class RenderWorker(threading.Thread):
                 self.done += 1
                 tag = "" if approved.judged else " [sem juiz]"
                 score = approved.verdict.score
-                self.log(name, f"short pronto (nota {score}){tag}: {path.name}", "bold green")
+                where = path.parent.relative_to(self.cfg.data_dir / QUEUE_DIR).as_posix()
+                self.log(name, f"short pronto (nota {score}){tag}: {where}", "bold green")
             except Exception as exc:  # um corte com problema não pode derrubar a live
                 self.log(name, f"render falhou: {exc}", "red")
             finally:
@@ -249,9 +343,16 @@ class RenderWorker(threading.Thread):
 
     def render(self, approved: Approved) -> Path:
         candidate, verdict = approved.candidate, approved.verdict
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        name = f"{stamp}_{candidate.channel.name}_n{verdict.score}_{slugify(verdict.title)}"
-        out = self.cfg.data_dir / QUEUE_DIR / f"{name}.mp4"
+        folder = short_dir(
+            self.cfg.data_dir / QUEUE_DIR,
+            time.localtime(),
+            candidate.channel.name,
+            verdict.score,
+            approved.judged,
+            verdict.title,
+        )
+        folder.mkdir(parents=True, exist_ok=True)
+        out = folder / f"{slugify(verdict.title, 60)}.mp4"
         work = Path(tempfile.mkdtemp(prefix="autocortes-render-"))
         try:
             segments = seg.read_segments(candidate.session.dir)
@@ -286,7 +387,7 @@ class JudgeWorker(threading.Thread):
         super().__init__(name="juiz", daemon=True)
         self.cfg, self.use_claude, self.renderer, self.log = cfg, use_claude, renderer, log
         self.inbox: queue.PriorityQueue = queue.PriorityQueue()
-        self.usage_log = cfg.data_dir / QUEUE_DIR / "juiz.jsonl"
+        self.queue_dir = cfg.data_dir / QUEUE_DIR
         self._order = itertools.count()
         self._claude_paused_until = 0.0
 
@@ -321,7 +422,9 @@ class JudgeWorker(threading.Thread):
             (audio_start + start, audio_start + end, text)
             for start, end, text in transcript.sentences
         ]
-        prompt = judge.build_prompt(name, peak.t, peak.score, lines, candidate.chat, times)
+        prompt = judge.build_prompt(
+            name, peak.t, peak.score, lines, candidate.chat, times, peak.chorus, peak.clips
+        )
         try:
             verdict, usage = judge.ask_claude(prompt, self.cfg.llm, clip, frames)
         except judge.JudgeError as exc:
@@ -372,21 +475,41 @@ class JudgeWorker(threading.Thread):
             shutil.rmtree(work, ignore_errors=True)
 
     def _record(self, candidate: Candidate, verdict: judge.Verdict, usage: judge.Usage) -> None:
-        """Guarda cada veredito e o consumo em data/fila/juiz.jsonl."""
+        """Guarda cada veredito (aprovado ou não) e o consumo em data/fila/<dia>/juiz.jsonl."""
         entry = {
             "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "channel": candidate.channel.name,
             "peak_t": round(candidate.peak.t, 1),
+            "chorus": candidate.peak.chorus,
+            "viewer_clips": list(candidate.peak.clips),
             "verdict": dataclasses.asdict(verdict),
             "usage": dataclasses.asdict(usage),
         }
-        self.usage_log.parent.mkdir(parents=True, exist_ok=True)
-        with self.usage_log.open("a", encoding="utf-8") as log:
+        path = self.queue_dir / time.strftime("%Y-%m-%d") / JUDGE_LOG
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as log:
             log.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+def short_dir(
+    root: Path, when: time.struct_time, channel: str, score: int, judged: bool, title: str
+) -> Path:
+    """Pasta de um short na fila: <dia>/<canal>/<hora>_n<nota>_<título>.
+
+    Ex.: data/fila/2026-11-19/felps/22h25_n8_ele-voou-de-moto/. Sem juiz, "_sem-juiz" depois
+    da nota. Se já existir (dois cortes no mesmo minuto), ganha um sufixo -2, -3...
+    """
+    tag = "" if judged else "_sem-juiz"
+    name = f"{time.strftime('%Hh%M', when)}_n{score}{tag}_{slugify(title)}"
+    base = root / time.strftime("%Y-%m-%d", when) / channel / name
+    folder, n = base, 2
+    while folder.exists():
+        folder, n = base.with_name(f"{name}-{n}"), n + 1
+    return folder
+
+
 def write_sidecars(video: Path, approved: Approved) -> None:
-    """Ao lado do .mp4: .json com tudo e .txt com o texto pronto para colar no post."""
+    """Na pasta do short: info.json com tudo e post.txt com o texto pronto para colar."""
     candidate, verdict = approved.candidate, approved.verdict
     data = {
         "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -395,14 +518,16 @@ def write_sidecars(video: Path, approved: Approved) -> None:
         "judged": approved.judged,
         "peak_t": round(candidate.peak.t, 1),
         "peak_score": round(candidate.peak.score, 2),
+        "chorus": candidate.peak.chorus,
+        "viewer_clips": list(candidate.peak.clips),
         **dataclasses.asdict(verdict),
         "video": video.name,
     }
     text = json.dumps(data, ensure_ascii=False, indent=2)
-    video.with_suffix(".json").write_text(text, encoding="utf-8")
+    (video.parent / INFO_FILE).write_text(text, encoding="utf-8")
     tags = " ".join(f"#{tag}" for tag in verdict.hashtags)
     post = "\n\n".join(part for part in (verdict.title, verdict.description, tags) if part)
-    video.with_suffix(".txt").write_text(post + "\n", encoding="utf-8")
+    (video.parent / POST_FILE).write_text(post + "\n", encoding="utf-8")
 
 
 def watch(
@@ -411,7 +536,15 @@ def watch(
     """Acompanha as lives até Ctrl+C (ou até `minutes`); os shorts saem em data/fila."""
     renderer = RenderWorker(cfg, log)
     judge_worker = JudgeWorker(cfg, use_claude, renderer, log)
-    channels = [Channel(url, cfg, log) for url in dict.fromkeys(urls)]
+    twitch_app = None
+    if cfg.detect.twitch_clips:
+        secrets = Secrets()
+        if secrets.twitch_client_id and secrets.twitch_client_secret:
+            twitch_app = TwitchApp(secrets.twitch_client_id, secrets.twitch_client_secret)
+        elif any(twitch_channel(url) for url in urls):
+            message = "sem TWITCH_CLIENT_ID/SECRET no .env: picos sem os clipes dos viewers"
+            log("clipes", message, "yellow")
+    channels = [Channel(url, cfg, log, twitch_app) for url in dict.fromkeys(urls)]
     renderer.start()
     judge_worker.start()
     for channel in channels:
@@ -429,7 +562,10 @@ def watch(
             if time.monotonic() >= next_report:
                 next_report += REPORT_EVERY
                 for channel in channels:
-                    stats = f"chat: {channel.chat_total} msgs | picos: {channel.peaks_total}"
+                    stats = (
+                        f"chat: {channel.chat_total} msgs | clipes: {channel.clips_total} | "
+                        f"picos: {channel.peaks_total}"
+                    )
                     log(channel.name, stats, "dim")
                 pending = f"julgar: {judge_worker.inbox.qsize()} | render: {renderer.inbox.qsize()}"
                 log("fila", f"{pending} | prontos: {renderer.done}", "dim")

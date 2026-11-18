@@ -85,20 +85,22 @@ def show_queue(
     """Lista os shorts prontos na fila de revisão, do mais novo para o mais antigo."""
     cfg: Config = ctx.obj
     folder = cfg.data_dir / live.QUEUE_DIR
-    items = sorted(folder.glob("*.json"), reverse=True)[:limit]
+    found = []
+    for path in folder.glob(f"*/*/*/{live.INFO_FILE}"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        found.append((data.get("created", ""), path.parent, data))
+    items = sorted(found, key=lambda item: item[0], reverse=True)[:limit]
     if not items:
         console.print(f"Fila vazia ({escape(str(folder))}).")
         return
     table = Table(title=f"Fila de revisão: {folder}")
-    for column in ("Quando", "Canal", "Nota", "Título", "Arquivo"):
+    for column in ("Quando", "Canal", "Nota", "Título", "Pasta"):
         table.add_column(column)
-    for path in items:
-        data = json.loads(path.read_text(encoding="utf-8"))
+    for created, short, data in items:
         score = f"{data['score']}" + ("" if data.get("judged") else "*")
-        when = data["created"][5:16].replace("T", " ")
-        table.add_row(
-            when, escape(data["channel"]), score, escape(data["title"]), escape(data["video"])
-        )
+        when = created[5:16].replace("T", " ")
+        where = short.relative_to(folder).as_posix()
+        table.add_row(when, escape(data["channel"]), score, escape(data["title"]), escape(where))
     console.print(table)
     console.print("* sem juiz: corte só pelos sinais de chat e áudio")
 

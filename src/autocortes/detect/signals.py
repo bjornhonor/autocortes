@@ -1,4 +1,4 @@
-"""Sinais por janela de tempo: atividade do chat e volume do áudio."""
+"""Sinais por janela de tempo: atividade do chat, chat em coro e volume do áudio."""
 
 import math
 import re
@@ -15,6 +15,16 @@ HYPE = re.compile(
     r"|(rs){2,}|a{4,}h*|n[aã]o{3,}|wtf|mds|caralho|nossa|socorro)\b"
 )
 MAX_PER_AUTHOR = 2  # mensagens de um mesmo autor contadas por janela: spam não pesa
+MIN_CHORUS = 3  # autores diferentes dizendo a mesma coisa para contar como coro
+LAUGH = re.compile(
+    r"^(k{2,}[kj]*|(ha){2,}h?|(he){2,}|(rs){2,}|kekw\w*|lulw?|omegalul|pepelaugh|icant|lmao|lol)$"
+)
+# Palavras que aparecem em todo chat e não dizem nada sobre o momento.
+STOPWORDS = frozenset(
+    "que não nao com pra para uma uns umas ele ela eles isso esse essa este esta mas tem tá "
+    "vai foi era ser ter mano cara mesmo muito mais aqui ali quem como porque pq por dos das "
+    "nos nas num numa você vc voce the and you that this what".split()
+)
 AUDIO_RATE = 8000  # Hz; para medir volume não precisa de mais
 
 
@@ -23,18 +33,38 @@ def chat_weight(text: str) -> float:
     return 2.0 if HYPE.search(text) else 1.0
 
 
+def chorus_tokens(text: str) -> set[str]:
+    """O que uma mensagem "grita": palavras normalizadas e, se curta, a frase inteira.
+
+    Letras repetidas viram no máximo duas ("NAAAAO" -> "naao") e toda risada vira "kkk",
+    para que "kkkkk", "KEKW" e "hahaha" contem como a mesma reação.
+    """
+    words = [re.sub(r"(.)\1{2,}", r"\1\1", w) for w in re.findall(r"\w+", text.lower())]
+    words = ["kkk" if LAUGH.match(w) else w for w in words]
+    tokens = {
+        w for w in words if w == "kkk" or (len(w) >= 3 and w not in STOPWORDS and not w.isdigit())
+    }
+    phrase = " ".join(words)
+    if 2 <= len(words) <= 6 and len(phrase) <= 40:
+        tokens.add(phrase)
+    return tokens
+
+
 class ChatWindows:
-    """Peso das mensagens do chat em cada janela de tempo."""
+    """Por janela de tempo: peso das mensagens e o "coro" (quantos autores dizem o mesmo)."""
 
     def __init__(self, window: float):
         self.window = window
         self._lock = threading.Lock()
         self._weight: dict[int, float] = defaultdict(float)
         self._authors: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        self._voices: dict[int, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
 
     def add(self, t: float, author: str, text: str) -> None:
         index = int(t // self.window)
         with self._lock:
+            for token in chorus_tokens(text):  # um autor conta uma vez por palavra
+                self._voices[index][token].add(author)
             if self._authors[index][author] >= MAX_PER_AUTHOR:
                 return
             self._authors[index][author] += 1
@@ -44,12 +74,24 @@ class ChatWindows:
         with self._lock:
             return self._weight.get(index, 0.0)
 
+    def chorus(self, index: int) -> tuple[int, str]:
+        """Maior coro da janela: (nº de autores diferentes, o que eles disseram).
+
+        Menos de MIN_CHORUS pessoas não é coro (num chat pequeno, 2 risadas são acaso).
+        """
+        with self._lock:
+            voices = self._voices.get(index)
+            if not voices:
+                return 0, ""
+            token = max(voices, key=lambda k: (len(voices[k]), len(k)))
+            count = len(voices[token])
+            return (count, token) if count >= MIN_CHORUS else (0, "")
+
     def forget_before(self, index: int) -> None:
         with self._lock:
-            for old in [k for k in self._weight if k < index]:
-                del self._weight[old]
-            for old in [k for k in self._authors if k < index]:
-                del self._authors[old]
+            for table in (self._weight, self._authors, self._voices):
+                for old in [k for k in table if k < index]:
+                    del table[old]
 
 
 def audio_levels(segment: Path, start: float, window: float) -> dict[int, tuple[float, int]]:

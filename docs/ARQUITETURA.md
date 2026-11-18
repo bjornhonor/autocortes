@@ -11,9 +11,9 @@ O chat reage alguns segundos *depois* do que aconteceu (tempo de ver + digitar).
 `autocortes watch <url> [<url> ...]` acompanha várias lives ao mesmo tempo:
 
 ```
-por canal:   gravador (streamlink -> ffmpeg)      chat (IRC da Twitch)
-                         \                            /
-                     analisador: sinais por janela -> picos
+por canal:   gravador (streamlink -> ffmpeg)   chat (IRC da Twitch)   clipes (API da Twitch)
+                         \                            |                    /
+                     analisador: sinais por janela -> picos  <------------
                                        |
 para todos:        juiz (Whisper + Claude) -> renderizador -> data/fila/
 ```
@@ -21,7 +21,7 @@ para todos:        juiz (Whisper + Claude) -> renderizador -> data/fila/
 - Cada canal tem gravador, chat e analisador próprios; os analisadores rodam no laço principal a cada 2 s.
 - Um **juiz** e um **renderizador** atendem todos os canais, um trabalho por vez cada, para não disputarem a CPU. O juiz pega primeiro o pico mais forte.
 - Se o Claude falhar (sem login, limite da assinatura), o juiz deixa o Claude de lado por 5 min e os picos viram short do mesmo jeito, só pelos sinais: corte fixo em volta do pico (`clip.pre_roll_seconds` / `post_roll_seconds`), marcado como "sem juiz". Nenhum momento se perde por falta de cota.
-- A fila de revisão (`data/fila/`) recebe, por short: o `.mp4`, um `.txt` com título, descrição e hashtags prontos para colar e um `.json` com tudo (canal, nota, motivo, tempos). `autocortes queue` lista a fila. Cada veredito do Claude, com o consumo, fica em `data/fila/juiz.jsonl`.
+- A fila de revisão (`data/fila/`) tem uma pasta por short em `<dia>/<canal>/<hora>_n<nota>_<título>/` (com `_sem-juiz` depois da nota quando o corte saiu só pelos sinais). Dentro: o `.mp4` com o título no nome, o `post.txt` com título, descrição e hashtags prontos para colar e o `info.json` com tudo (canal, nota, motivo, tempos, coro, clipes dos viewers). `autocortes queue` lista a fila. Cada veredito do Claude, aprovado ou não, com o consumo, fica em `data/fila/<dia>/juiz.jsonl`.
 
 ## 1. Captura — `ingest/`
 
@@ -46,9 +46,20 @@ Séries em janelas de `detect.window_seconds` (5 s), em z-score robusto (mediana
 | Sinal | Cálculo | Observação |
 |---|---|---|
 | `chat` | peso das mensagens na janela | cada autor conta no máximo 2 vezes por janela (spam não pesa); risada e hype (`KEKW`, `kkkk`, `Pog`, "clipa", "NAOOO") valem o dobro |
+| `chorus` | quantos autores **diferentes** disseram a mesma coisa na janela (o maior coro) | separa reação de bate-papo: 25 pessoas mandando "KKKK" é um momento; o chat só mais movimentado, não. Cada mensagem vira palavras normalizadas (letras repetidas cortadas em duas, toda risada — `kkkkk`, `KEKW`, `hahaha` — vira `kkk`, palavras comuns ignoradas) mais a frase inteira, se curta. O coro vai junto para o log e para o juiz |
 | `audio` | volume (dB) de cada segundo, médio na janela | grito, risada, susto; depois dá para trocar por um classificador de som |
 
-O score é a média ponderada dos sinais disponíveis (`detect.weights`: chat 0,6, áudio 0,4). Janela acima de `trigger_zscore` vira pico, com distância mínima entre picos (`min_gap_seconds`) e teto por hora (`max_clips_per_hour`), por canal. Depois: clipes criados pelos viewers (API da Twitch) como terceiro sinal.
+O score é a média ponderada dos sinais disponíveis (`detect.weights`: chat 0,3, coro 0,4, áudio 0,3). Janela acima de `trigger_zscore` vira pico, com distância mínima entre picos (`min_gap_seconds`) e teto por hora (`max_clips_per_hour`), por canal.
+
+### Clipes dos viewers
+
+Quando alguém cria um clipe na Twitch, é uma pessoa dizendo "isso aqui foi bom". Com `TWITCH_CLIENT_ID` e `TWITCH_CLIENT_SECRET` no `.env` (de um app registrado em dev.twitch.tv/console; token de app, sem login de ninguém), cada canal da Twitch consulta a API oficial (`GET /helix/clips?broadcaster_id=…&started_at=<início da gravação>`) a cada `detect.clips_poll_seconds` (60 s).
+
+- O instante do lance é o `created_at` do clipe menos `reaction_delay_seconds`: quem clipa clica logo depois de ver. Clipes a menos de 45 s um do outro são o mesmo momento.
+- O pico de clipe tem intensidade 10 (+1 por clipe a mais), então passa na frente dos picos de sinal na fila do juiz, e não conta para o teto por hora. `clips_min_count` (padrão 1) exige mais clipes do mesmo momento; em canal grande, onde se clipa tudo, 2 filtra melhor.
+- Se um pico de chat/áudio cai perto de um pico de clipe ainda na fila, os dois viram um só, com o instante do clipe. Momento já mandado ao juiz não é julgado de novo.
+- O juiz recebe os títulos dos clipes (o que os viewers viram) e o coro do chat, como dados.
+- Sem as credenciais, ou com `detect.twitch_clips: false`, segue só com chat e áudio. O `doctor` pede um token para conferir as credenciais.
 
 ### Claude, só nos picos
 
@@ -109,7 +120,7 @@ Filtro do `blur` (o fundo é desfocado em 1/4 da resolução, que é bem mais r�
 
 ## 4. Revisão
 
-Hoje a fila é a pasta `data/fila/`: você assiste ao `.mp4`, copia o texto do `.txt` e posta. `autocortes queue` lista o que está pronto, com nota e título. Depois vira um painel web (fase 5) e, com `publish.manual_review: false`, o que o juiz aprova é publicado direto.
+Hoje a fila é a pasta `data/fila/`, organizada por dia e canal: você abre a pasta do short, assiste ao `.mp4`, copia o texto do `post.txt` e posta. `autocortes queue` lista o que está pronto, com nota e título. Depois vira um painel web (fase 5) e, com `publish.manual_review: false`, o que o juiz aprova é publicado direto.
 
 ## 5. Publicação — `publish/`
 
@@ -119,7 +130,7 @@ Cada plataforma tem teto diário (o TikTok, em geral ~15 posts por conta), menor
 
 ## Estado
 
-Por enquanto, arquivos: `data/live/<canal>/<sessão>/` (segmentos, `segments.csv`, `gravacao.log`) e `data/fila/` (shorts, `.txt`, `.json`, `juiz.jsonl`). Um banco SQLite entra quando a publicação automática e o painel precisarem guardar status de post.
+Por enquanto, arquivos: `data/live/<canal>/<sessão>/` (segmentos, `segments.csv`, `gravacao.log`) e `data/fila/<dia>/` (`juiz.jsonl` e uma pasta por canal e por short, com `.mp4`, `post.txt` e `info.json`). Um banco SQLite entra quando a publicação automática e o painel precisarem guardar status de post.
 
 ## Esta máquina
 

@@ -23,9 +23,9 @@ flowchart LR
 ```
 
 1. **Captura**: o `streamlink` puxa cada live e o `ffmpeg` grava em segmentos de 10 s, sem reencode. O chat da Twitch é lido em paralelo, com horário.
-2. **Detecção**: sinais baratos rodam o tempo todo: volume de mensagens no chat, emotes de risada/hype (`KEKW`, `kkkk`, "clipa") e picos de volume. Quando disparam, o trecho em volta é transcrito e o Claude decide se vale um corte, onde começa e termina (em frases completas) e escreve título, descrição e hashtags.
+2. **Detecção**: sinais baratos rodam o tempo todo: o chat em coro (muita gente diferente mandando a mesma coisa, como "KKKK" ou "NAAAO"), o volume de mensagens, os picos de volume do áudio e, com um app da Twitch configurado, os clipes que os viewers criam, que é o sinal mais forte. Quando disparam, o trecho em volta é transcrito e o Claude decide se vale um corte, onde começa e termina (em frases completas) e escreve título, descrição e hashtags.
 3. **Render**: uma passada de `ffmpeg` por short: corta, reenquadra para 1080×1920 (fundo desfocado, recorte central, facecam em cima + gameplay embaixo, ou recorte que segue o rosto), normaliza o volume e queima a legenda palavra a palavra.
-4. **Revisão**: os shorts caem em `data/fila/` com o texto do post pronto; você assiste, aprova e posta.
+4. **Revisão**: cada short cai na sua pasta em `data/fila/<dia>/<canal>/`, com o texto do post pronto; você assiste, aprova e posta.
 5. **Publicação**: por enquanto manual. Depois, as três plataformas em paralelo.
 
 Desenho técnico: [docs/ARQUITETURA.md](docs/ARQUITETURA.md). O que cada plataforma exige (conta, app, auditoria, limites): [docs/PLATAFORMAS.md](docs/PLATAFORMAS.md). **O TikTok só deixa postar público pela API depois de auditar o app, o que leva semanas; no lançamento, a postagem lá é manual.**
@@ -59,6 +59,8 @@ copy .env.example .env
 .venv\Scripts\autocortes doctor
 ```
 
+Opcional, mas é o sinal que mais acerta: para os clipes que os viewers criam na Twitch virarem picos, registre um app em [dev.twitch.tv/console](https://dev.twitch.tv/console) (categoria "Application Integration", OAuth Redirect URL `http://localhost`) e ponha o Client ID e um Client Secret no `.env` (`TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET`). O `doctor` confere se funcionam.
+
 Para o juiz usar a sua assinatura do Claude, rode `claude setup-token` num terminal, autorize com a conta que vai usar e cole o token no `.env` como `CLAUDE_CODE_OAUTH_TOKEN`. Se a cópia do terminal quebrar a linha e enfiar um espaço no token, tudo bem: o espaço é ignorado. O juiz com o Opus 5.5 exige o Claude Code 2.1.280 ou mais novo (`claude update`).
 
 Rode os comandos sempre de dentro da pasta do projeto: os caminhos `.venv\...`, o `config.yaml` e o `.env` são procurados a partir da pasta atual. Com o venv ativado (`.venv\Scripts\Activate.ps1`), basta chamar `autocortes`.
@@ -72,7 +74,22 @@ autocortes watch twitch.tv/canal1 twitch.tv/canal2 twitch.tv/canal3
 autocortes queue
 ```
 
-- `watch` grava cada live, lê o chat e procura picos de reação. O Claude julga cada pico lendo a fala e o chat e **vendo 5 quadros da cena**, o que pega lances de jogo que ninguém narrou. Só a nota 8 ou mais vira short (`detect.min_judge_score`), e o short sai em `data/fila/` com uma manchete no topo do vídeo e um `.txt` de título, descrição e hashtags prontos para colar. `queue` lista o que já está pronto.
+- `watch` grava cada live, lê o chat e procura picos de reação. O Claude julga cada pico lendo a fala e o chat e **vendo 5 quadros da cena**, o que pega lances de jogo que ninguém narrou. Só a nota 8 ou mais vira short (`detect.min_judge_score`), e o short sai na fila com uma manchete no topo do vídeo. `queue` lista o que já está pronto.
+- A fila tem uma pasta por dia, uma por canal e uma por short, com hora, nota e título no nome. Dentro dela: o vídeo, o `post.txt` (título, descrição e hashtags prontos para colar) e o `info.json` (nota, motivo, tempos, coro do chat, clipes dos viewers). Os vereditos do dia, inclusive os descartados, ficam no `juiz.jsonl` da pasta do dia:
+
+  ```
+  data/fila/
+  └── 2026-11-19/
+      ├── juiz.jsonl
+      ├── felps/
+      │   ├── 21h40_n8_ele-voou-de-moto-ate-o-telhado/
+      │   │   ├── ele-voou-de-moto-ate-o-telhado.mp4
+      │   │   ├── post.txt
+      │   │   └── info.json
+      │   └── 22h05_n9_assalto-deu-errado-e-ele-fugiu-a-pe/
+      └── alanzoka/
+          └── 21h52_n8_...
+  ```
 - Para ensaiar com limites mais baixos (picos em poucos minutos): `autocortes -c ensaio.yaml watch ...`. O `ensaio.yaml` herda tudo do `config.yaml` (`base: config.yaml`) e só muda a detecção.
 - Pode começar antes da live: ele espera o canal entrar no ar.
 - Sem o Claude disponível (sem login ou sem cota), os picos viram short do mesmo jeito, só pelos sinais, marcados como "sem juiz". `--no-judge` força esse modo.

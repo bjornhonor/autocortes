@@ -143,6 +143,22 @@ def _claude_check(group: str) -> Check:
     return Check(group, "CLI claude (juiz)", True, text)
 
 
+def _twitch_check(group: str, s: Secrets) -> Check:
+    """Pede um token de app à Twitch: confirma que o client id/secret funcionam."""
+    from autocortes.ingest.clips import TwitchApp, TwitchAuthError
+
+    item = "TWITCH_CLIENT_ID + SECRET"
+    if not (s.twitch_client_id and s.twitch_client_secret):
+        return Check(group, item, False, "clipes dos viewers como pico - app em dev.twitch.tv")
+    try:
+        TwitchApp(s.twitch_client_id, s.twitch_client_secret).authorize()
+    except TwitchAuthError as exc:
+        return Check(group, item, False, str(exc))
+    except OSError as exc:
+        return Check(group, item, False, f"sem resposta da Twitch ({exc})")
+    return Check(group, item, True, "clipes dos viewers ligados")
+
+
 def credential_checks() -> list[Check]:
     s = Secrets()
     group = "Credenciais (.env)"
@@ -165,6 +181,7 @@ def credential_checks() -> list[Check]:
             compact.startswith("sk-ant-oat"),
             token_detail,
         ),
+        _twitch_check(group, s),
         Check(group, "YOUTUBE_CLIENT_SECRETS", youtube.is_file(), f"publicação - {youtube}"),
         Check(
             group,
