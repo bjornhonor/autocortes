@@ -12,6 +12,7 @@ from autocortes.config import CaptionsConfig
 SENTENCE_END = (".", "!", "?", "…")
 MAX_PAUSE = 0.6  # segundos de silêncio que encerram um bloco de palavras
 LINGER = 0.3  # o último bloco fica na tela um pouco depois da fala
+MIN_GAP = 0.08  # silêncio entre palavras menor que isso não apaga o destaque (evita piscar)
 
 STYLE_FIELDS = (
     "Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
@@ -123,8 +124,11 @@ def build_ass(
     headline: str = "",
     duration: float = 0.0,
 ) -> str:
-    """Legenda .ass: blocos de palavras com a da vez em destaque e, se houver, a manchete no
-    topo durante o vídeo todo."""
+    """Legenda .ass: blocos de palavras e, se houver, a manchete no topo durante o vídeo todo.
+
+    A palavra fica amarela só enquanto é falada (do início ao fim dela no Whisper); nas
+    pausas entre palavras e depois da última, o bloco continua na tela, todo branco.
+    """
     outline = max(2, round(cfg.font_size * 0.07))
     style = (
         f"Style: Short,{cfg.font},{cfg.font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,"
@@ -141,21 +145,21 @@ def build_ass(
     events = []
     for g, group in enumerate(groups):
         texts = [_clean(w.text, cfg.uppercase) for w in group]
-        next_start = groups[g + 1][0].start if g + 1 < len(groups) else None
+        group_end = group[-1].end + LINGER
+        if g + 1 < len(groups):
+            group_end = min(group_end, groups[g + 1][0].start)
         for i, word in enumerate(group):
-            if i + 1 < len(group):
-                end = group[i + 1].start
-            else:
-                end = word.end + LINGER
-                if next_start is not None:
-                    end = min(end, next_start)
+            following = group[i + 1].start if i + 1 < len(group) else group_end
+            end = min(word.end, following)
+            if following - end <= MIN_GAP:
+                end = following
             end = max(end, word.start + 0.05)
             line = " ".join(
                 f"{pop}{text}{{\\r}}" if j == i else text for j, text in enumerate(texts)
             )
-            events.append(
-                f"Dialogue: 0,{ass_time(word.start)},{ass_time(end)},Short,,0,0,0,,{line}"
-            )
+            events.append(_dialogue(word.start, end, line))
+            if end < following:  # silêncio: o bloco fica, sem destaque
+                events.append(_dialogue(end, following, " ".join(texts)))
     if headline.strip() and duration > 0:
         text = headline_markup(headline, color)
         span = f"0:00:00.00,{ass_time(duration)}"
@@ -168,6 +172,10 @@ def build_ass(
         f"[Events]\nFormat: {EVENT_FIELDS}\n"
     )
     return header + "".join(f"{event}\n" for event in events)
+
+
+def _dialogue(start: float, end: float, text: str) -> str:
+    return f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Short,,0,0,0,,{text}"
 
 
 def headline_markup(text: str, color: str) -> str:

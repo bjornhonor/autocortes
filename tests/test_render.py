@@ -50,7 +50,7 @@ def test_group_words_breaks_on_size_pause_and_sentence_end():
     ]
 
 
-def test_build_ass_highlights_one_word_per_event():
+def test_build_ass_highlights_a_word_only_while_it_is_spoken():
     words = make_words(
         ("fala", 0.0, 0.4), ("galera", 0.5, 1.0), ("tudo", 1.1, 1.4), ("bem?", 1.5, 1.9)
     )
@@ -58,12 +58,24 @@ def test_build_ass_highlights_one_word_per_event():
     events = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
     assert "PlayResY: 1920" in ass
     assert "Style: Short,Montserrat ExtraBold,88," in ass
-    assert len(events) == 4
-    assert events[0].startswith("Dialogue: 0,0:00:00.00,0:00:00.50,Short,")
+    assert len(events) == 8  # cada palavra amarela + a pausa seguinte toda branca
+    assert events[0].startswith("Dialogue: 0,0:00:00.00,0:00:00.40,Short,")
     assert "{\\c&H00E1FF&" in events[0]
     assert events[0].endswith("}FALA{\\r} GALERA TUDO")
-    assert events[2].startswith("Dialogue: 0,0:00:01.10,0:00:01.50,")  # cola no bloco seguinte
-    assert events[3].startswith("Dialogue: 0,0:00:01.50,0:00:02.20,")  # último fica 0,3 s a mais
+    assert events[1] == "Dialogue: 0,0:00:00.40,0:00:00.50,Short,,0,0,0,,FALA GALERA TUDO"
+    assert events[4].startswith("Dialogue: 0,0:00:01.10,0:00:01.40,")
+    assert events[5].startswith("Dialogue: 0,0:00:01.40,0:00:01.50,")  # branco até o próximo bloco
+    assert events[6].startswith("Dialogue: 0,0:00:01.50,0:00:01.90,")
+    assert events[7].startswith("Dialogue: 0,0:00:01.90,0:00:02.20,")  # fica 0,3 s, em branco
+    assert "\\c" not in events[7]
+
+
+def test_build_ass_keeps_the_highlight_across_tiny_gaps():
+    words = make_words(("muito", 0.0, 0.40), ("bom", 0.45, 0.8))
+    ass = captions.build_ass(words, CaptionsConfig(), 1080, 1920)
+    events = [line for line in ass.splitlines() if line.startswith("Dialogue:")]
+    assert events[0].startswith("Dialogue: 0,0:00:00.00,0:00:00.45,")  # 0,05 s não pisca
+    assert events[1].startswith("Dialogue: 0,0:00:00.45,0:00:00.80,")
 
 
 def write_wav(path: Path, samples: list[int], channels: int = 1, rate: int = 16000) -> Path:
